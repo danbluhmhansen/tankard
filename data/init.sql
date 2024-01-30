@@ -43,6 +43,8 @@ OR REPLACE AGGREGATE jsonb_merge_agg(jsonb) (
   initcond = '{}'
 );
 
+DROP MATERIALIZED VIEW "users";
+
 CREATE MATERIALIZED VIEW "users" AS
 SELECT
   s.id,
@@ -53,7 +55,6 @@ SELECT
   e.data ->> 'email' AS email
 FROM
   "event_streams" s
-  JOIN stream_types t ON t.id = s.type
   JOIN (
     SELECT
       stream_id,
@@ -65,4 +66,97 @@ FROM
       stream_id
   ) e ON e.stream_id = s.id
 WHERE
-  t.name = 'user';
+  s.type = 1;
+
+CREATE
+OR REPLACE FUNCTION init_user(
+  username text,
+  password text,
+  stream_id uuid DEFAULT gen_random_uuid()
+) RETURNS record language plpgsql AS $$ DECLARE salt text := gen_salt('bf');
+
+user_event record;
+
+BEGIN
+INSERT INTO
+  "event_streams" (id, TYPE)
+VALUES
+  (stream_id, 1);
+
+INSERT INTO
+  "events" (stream_id, name, data)
+VALUES
+  (
+    stream_id,
+    'user_initialized',
+    jsonb_build_object(
+      'username',
+      username,
+      'salt',
+      salt,
+      'passhash',
+      crypt(password, salt)
+    )
+  ) RETURNING * INTO user_event;
+
+RETURN user_event;
+
+END $$;
+
+CREATE
+OR REPLACE FUNCTION set_username(stream_id uuid, username text) RETURNS record language plpgsql AS $$ BEGIN
+INSERT INTO
+  "events" (stream_id, name, data)
+VALUES
+  (
+    stream_id,
+    'username_set',
+    jsonb_build_object('username', username)
+  ) RETURNING *;
+
+END $$;
+
+CREATE
+OR REPLACE FUNCTION set_password(stream_id uuid, password text) RETURNS record language plpgsql AS $$ DECLARE salt text := gen_salt('bf');
+
+set_password_event record;
+
+BEGIN
+INSERT INTO
+  "events" (stream_id, name, data)
+VALUES
+  (
+    stream_id,
+    'password_set',
+    jsonb_build_object(
+      'salt',
+      salt,
+      'passhash',
+      crypt(password, salt)
+    )
+  ) RETURNING * INTO set_password_event;
+
+RETURN set_password_event;
+
+END $$;
+
+CREATE
+OR REPLACE FUNCTION check_password(id uuid, password text) RETURNS boolean language plpgsql AS $$ DECLARE salt text;
+
+passhash text;
+
+BEGIN
+SELECT
+  u.salt,
+  u.passhash INTO salt,
+  passhash
+FROM
+  users u
+WHERE
+  u.id = check_password.id
+LIMIT
+  1;
+
+RETURN crypt(password, salt) = passhash;
+
+END $$;

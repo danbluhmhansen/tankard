@@ -2,26 +2,6 @@ schema "public" {
   comment = "standard public schema"
 }
 
-table "stream_types" {
-  schema = schema.public
-  column "id" {
-    type = int
-    identity {
-      generated = ALWAYS
-    }
-  }
-  column "name" {
-    type = text
-  }
-  primary_key {
-    columns = [column.id]
-  }
-  index "name" {
-    columns = [column.name]
-    unique = true
-  }
-}
-
 table "event_streams" {
   schema = schema.public
   column "id" {
@@ -33,11 +13,6 @@ table "event_streams" {
   }
   primary_key {
     columns = [column.id]
-  }
-  foreign_key "type" {
-    columns = [column.type]
-    ref_columns = [table.stream_types.column.id]
-    on_delete = CASCADE
   }
   index "type" {
     columns = [column.type]
@@ -53,13 +28,16 @@ table "events" {
     type = uuid
     default = sql("gen_random_uuid()")
   }
-  column "data" {
-    type = jsonb
-    null = true
+  column "name" {
+    type = text
   }
   column "timestamp" {
     type = timestamptz
     default = sql("clock_timestamp()")
+  }
+  column "data" {
+    type = jsonb
+    null = true
   }
   primary_key "id" {
     columns = [column.id]
@@ -72,10 +50,10 @@ table "events" {
   index "stream_id" {
     columns = [column.stream_id]
   }
+  index "stream_id_name" {
+    columns = [column.stream_id, column.name,]
+  }
   index "stream_id_timestamp" {
-    columns = [
-      column.stream_id,
-      column.timestamp,
-    ]
+    columns = [column.stream_id, column.timestamp,]
   }
 }
