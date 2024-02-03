@@ -164,12 +164,15 @@ async fn root_post(
                 let claims = Claims::now(Duration::from_secs(120))
                     .unwrap()
                     .sub(user.id.unwrap().into());
+
+                let key = &std::env::var("ACCESS_TOKEN_PRIVATE_KEY").unwrap();
                 let token = jsonwebtoken::encode(
-                    &jsonwebtoken::Header::default(),
+                    &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
                     &claims,
-                    &jsonwebtoken::EncodingKey::from_secret("secret".as_ref()),
+                    &jsonwebtoken::EncodingKey::from_rsa_pem(key.as_bytes()).unwrap(),
                 )
                 .unwrap();
+
                 (
                     jar.add(
                         Cookie::build(("session_id", token))

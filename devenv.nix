@@ -4,6 +4,8 @@
   # https://devenv.sh/basics/
   env.DATABASE_URL = "postgres://postgres:password@localhost:5432/tankard?sslmode=disable";
   env.DATABASE_DEV_URL = "postgres://postgres:password@localhost:5432/tankard_dev?sslmode=disable";
+  env.ACCESS_TOKEN_PRIVATE_KEY = builtins.readFile ./private_key.pem;
+  env.ACCESS_TOKEN_PUBLIC_KEY = builtins.readFile ./public_key.pem;
 
   # https://devenv.sh/packages/
   packages = [
