@@ -11,6 +11,7 @@
     pkgs.atlas
     pkgs.cargo-watch
     pkgs.sleek
+    pkgs.tailwindcss
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
     frameworks.Security
@@ -18,7 +19,8 @@
   ]);
 
   # https://devenv.sh/scripts/
-  scripts.schema_diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl";
+  scripts.schema_diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl | bat --language sql";
+  scripts.tw_watch.exec = "tailwindcss --input tailwind.css --output static/site.css --watch";
 
   # https://devenv.sh/languages/
   languages.rust.enable = true;

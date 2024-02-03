@@ -10,3 +10,6 @@ devenv.local.nix
 
 # cargo
 /target
+
+# tankard
+static/site.css
