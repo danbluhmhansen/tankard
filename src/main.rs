@@ -1,4 +1,8 @@
-use std::{error::Error, net::Ipv4Addr, time::Duration};
+use std::{
+    error::Error,
+    net::Ipv4Addr,
+    time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH},
+};
 
 use axum::{
     extract::State,
@@ -54,18 +58,20 @@ struct RootPath;
 
 fn root_page() -> Markup {
     layout(html! {
-        h1 { "Hello, World!" }
         form method="post" {
             input type="text" name="username" placeholder="Username" required class="bg-transparent";
             input type="password" name="password" placeholder="Password" required class="bg-transparent";
-            input type="submit" value="Login";
+            button type="submit" name="submit" value="signin" { "Sign in" }
+        }
+        form method="post" {
+            input type="text" name="username" placeholder="Username" required class="bg-transparent";
+            input type="password" name="password" placeholder="Password" required class="bg-transparent";
+            button type="submit" name="submit" value="signup" { "Sign up" }
         }
     })
 }
 
-async fn root_get(_: RootPath, jar: CookieJar) -> Markup {
-    let token = jar.get("session_id").map(|c| c.value());
-    println!("{token:?}");
+async fn root_get(_: RootPath) -> Markup {
     root_page()
 }
 
@@ -73,20 +79,21 @@ async fn root_get(_: RootPath, jar: CookieJar) -> Markup {
 struct RootPayload {
     username: String,
     password: String,
+    submit: String,
 }
 
 #[derive(Deserialize, Serialize)]
 struct Claims {
-    exp: usize,
+    exp: u64,
     aud: Option<String>,
-    iat: Option<usize>,
+    iat: Option<u64>,
     iss: Option<String>,
-    nbf: Option<usize>,
+    nbf: Option<u64>,
     sub: Option<String>,
 }
 
 impl Claims {
-    fn new(exp: usize) -> Self {
+    fn new(exp: u64) -> Self {
         Self {
             exp,
             aud: None,
@@ -95,6 +102,38 @@ impl Claims {
             nbf: None,
             sub: None,
         }
+    }
+
+    fn now(exp: Duration) -> Result<Self, SystemTimeError> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+        Ok(Self {
+            exp: now.saturating_add(exp).as_secs(),
+            aud: None,
+            iat: Some(now.as_secs()),
+            iss: None,
+            nbf: None,
+            sub: None,
+        })
+    }
+
+    fn iat(mut self, iat: u64) -> Self {
+        self.iat = Some(iat);
+        self
+    }
+
+    fn nbf(mut self, nbf: u64) -> Self {
+        self.nbf = Some(nbf);
+        self
+    }
+
+    fn aud(mut self, aud: String) -> Self {
+        self.aud = Some(aud);
+        self
+    }
+
+    fn iss(mut self, iss: String) -> Self {
+        self.iss = Some(iss);
+        self
     }
 
     fn sub(mut self, sub: String) -> Self {
@@ -108,36 +147,54 @@ async fn root_post(
     jar: CookieJar,
     Form(form): Form<RootPayload>,
 ) -> Response {
-    let user = sqlx::query!("SELECT id FROM users WHERE username = $1;", form.username)
-        .fetch_one(&state)
-        .await
-        .unwrap();
+    match form.submit.as_str() {
+        "signin" => {
+            let user = sqlx::query!("SELECT id FROM users WHERE username = $1;", form.username)
+                .fetch_one(&state)
+                .await
+                .unwrap();
 
-    let success = sqlx::query_scalar!("SELECT check_password($1, $2);", user.id, form.password)
-        .fetch_one(&state)
-        .await
-        .unwrap();
+            let success =
+                sqlx::query_scalar!("SELECT check_password($1, $2);", user.id, form.password)
+                    .fetch_one(&state)
+                    .await
+                    .unwrap();
 
-    if success.is_some_and(|s| s) {
-        let claims = Claims::new(300).sub(user.id.unwrap().into());
-        let token = jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
-            &claims,
-            &jsonwebtoken::EncodingKey::from_secret("secret".as_ref()),
-        )
-        .unwrap();
-        (
-            jar.add(
-                Cookie::build(("session_id", token))
-                    .http_only(true)
-                    .same_site(SameSite::Strict)
-                    .build(),
-            ),
-            root_page(),
-        )
-            .into_response()
-    } else {
-        root_page().into_response()
+            if success.is_some_and(|s| s) {
+                let claims = Claims::now(Duration::from_secs(120))
+                    .unwrap()
+                    .sub(user.id.unwrap().into());
+                let token = jsonwebtoken::encode(
+                    &jsonwebtoken::Header::default(),
+                    &claims,
+                    &jsonwebtoken::EncodingKey::from_secret("secret".as_ref()),
+                )
+                .unwrap();
+                (
+                    jar.add(
+                        Cookie::build(("session_id", token))
+                            .http_only(true)
+                            .same_site(SameSite::Strict)
+                            .build(),
+                    ),
+                    root_page(),
+                )
+                    .into_response()
+            } else {
+                root_page().into_response()
+            }
+        }
+        "signup" => {
+            let _ = sqlx::query!("SELECT init_user($1, $2);", form.username, form.password)
+                .fetch_all(&state)
+                .await;
+            let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
+                .fetch_all(&state)
+                .await;
+
+            root_page().into_response()
+        }
+        _ => unreachable!(),
     }
 }
 

@@ -35,7 +35,8 @@
   };
 
   # https://devenv.sh/processes/
-  # processes.watch.exec = "cargo watch --exec run";
+  processes.watch.exec = "cargo watch --exec run";
+  # processes.tw_watch.exec = "tw_watch";
 
   # https://devenv.sh/services/
   services.postgres = {

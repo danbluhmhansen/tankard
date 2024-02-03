@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE
 OR REPLACE FUNCTION jsonb_deep_merge(jsonb, jsonb) RETURNS jsonb language SQL immutable AS $$
 SELECT
