@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     net::Ipv4Addr,
-    time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 use axum::{
@@ -17,8 +17,13 @@ use axum_extra::{
     },
     routing::{RouterExt, TypedPath},
 };
+use josekit::{
+    jwe::{alg::rsaes::RsaesJweAlgorithm, JweContext, JweHeader},
+    jws::{alg::rsassa::RsassaJwsAlgorithm, JwsHeader},
+    jwt::JwtPayload,
+};
 use maud::{html, Markup, DOCTYPE};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
@@ -82,66 +87,6 @@ struct RootPayload {
     submit: String,
 }
 
-#[derive(Deserialize, Serialize)]
-struct Claims {
-    exp: u64,
-    aud: Option<String>,
-    iat: Option<u64>,
-    iss: Option<String>,
-    nbf: Option<u64>,
-    sub: Option<String>,
-}
-
-impl Claims {
-    fn new(exp: u64) -> Self {
-        Self {
-            exp,
-            aud: None,
-            iat: None,
-            iss: None,
-            nbf: None,
-            sub: None,
-        }
-    }
-
-    fn now(exp: Duration) -> Result<Self, SystemTimeError> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
-        Ok(Self {
-            exp: now.saturating_add(exp).as_secs(),
-            aud: None,
-            iat: Some(now.as_secs()),
-            iss: None,
-            nbf: None,
-            sub: None,
-        })
-    }
-
-    fn iat(mut self, iat: u64) -> Self {
-        self.iat = Some(iat);
-        self
-    }
-
-    fn nbf(mut self, nbf: u64) -> Self {
-        self.nbf = Some(nbf);
-        self
-    }
-
-    fn aud(mut self, aud: String) -> Self {
-        self.aud = Some(aud);
-        self
-    }
-
-    fn iss(mut self, iss: String) -> Self {
-        self.iss = Some(iss);
-        self
-    }
-
-    fn sub(mut self, sub: String) -> Self {
-        self.sub = Some(sub);
-        self
-    }
-}
-
 async fn root_post(
     State(state): State<Pool<Postgres>>,
     jar: CookieJar,
@@ -161,17 +106,32 @@ async fn root_post(
                     .unwrap();
 
             if success.is_some_and(|s| s) {
-                let claims = Claims::now(Duration::from_secs(120))
-                    .unwrap()
-                    .sub(user.id.unwrap().into());
+                let mut header = JwsHeader::new();
+                header.set_token_type("JWT");
 
-                let key = &std::env::var("ACCESS_TOKEN_PRIVATE_KEY").unwrap();
-                let token = jsonwebtoken::encode(
-                    &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
-                    &claims,
-                    &jsonwebtoken::EncodingKey::from_rsa_pem(key.as_bytes()).unwrap(),
-                )
-                .unwrap();
+                let now = SystemTime::now();
+                let mut payload = JwtPayload::new();
+                payload.set_issued_at(&now);
+                payload.set_expires_at(&now.checked_add(Duration::from_secs(120)).unwrap());
+                payload.set_subject(user.id.unwrap());
+
+                let signer = RsassaJwsAlgorithm::Rs256
+                    .signer_from_pem(std::env::var("ACCESS_TOKEN_PRIVATE_KEY").unwrap())
+                    .unwrap();
+
+                let token = josekit::jwt::encode_with_signer(&payload, &header, &signer).unwrap();
+
+                let mut header = JweHeader::new();
+                header.set_token_type("JWT");
+                header.set_content_encryption("A128CBC-HS256");
+
+                let encryptor = RsaesJweAlgorithm::RsaOaep
+                    .encrypter_from_pem(std::env::var("ACCESS_TOKEN_PUBLIC_KEY").unwrap())
+                    .unwrap();
+
+                let token = JweContext::new()
+                    .serialize_compact(token.as_bytes(), &header, &encryptor)
+                    .unwrap();
 
                 (
                     jar.add(

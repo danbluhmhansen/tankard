@@ -14,6 +14,7 @@
     pkgs.cargo-watch
     pkgs.sleek
     pkgs.tailwindcss
+    pkgs.openssl
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
     frameworks.Security
