@@ -1,8 +1,4 @@
-use std::{
-    error::Error,
-    net::Ipv4Addr,
-    time::{Duration, SystemTime},
-};
+use std::{error::Error, net::Ipv4Addr, time::Duration};
 
 use axum::{
     extract::State,
@@ -17,12 +13,15 @@ use axum_extra::{
     },
     routing::{RouterExt, TypedPath},
 };
-use josekit::{
-    jwe::{alg::rsaes::RsaesJweAlgorithm, JweContext, JweHeader},
-    jws::{alg::rsassa::RsassaJwsAlgorithm, JwsHeader},
-    jwt::JwtPayload,
-};
 use maud::{html, Markup, DOCTYPE};
+use pasetors::{
+    claims::{Claims, ClaimsValidationRules},
+    keys::SymmetricKey,
+    local,
+    token::UntrustedToken,
+    version4::V4,
+    Local,
+};
 use serde::Deserialize;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::net::TcpListener;
@@ -76,7 +75,23 @@ fn root_page() -> Markup {
     })
 }
 
-async fn root_get(_: RootPath) -> Markup {
+async fn root_get(_: RootPath, jar: CookieJar) -> Markup {
+    let token = jar.get("session_id").unwrap().value();
+    if let Ok(token) = local::decrypt(
+        &SymmetricKey::<V4>::try_from(std::env::var("PASERK").unwrap().as_str()).unwrap(),
+        &UntrustedToken::<Local, V4>::try_from(token).unwrap(),
+        &ClaimsValidationRules::new(),
+        None,
+        None,
+    ) {
+        println!(
+            "{:?}",
+            token
+                .payload_claims()
+                .and_then(|c| c.get_claim("sub"))
+                .and_then(|v| v.as_str())
+        );
+    }
     root_page()
 }
 
@@ -106,32 +121,19 @@ async fn root_post(
                     .unwrap();
 
             if success.is_some_and(|s| s) {
-                let mut header = JwsHeader::new();
-                header.set_token_type("JWT");
-
-                let now = SystemTime::now();
-                let mut payload = JwtPayload::new();
-                payload.set_issued_at(&now);
-                payload.set_expires_at(&now.checked_add(Duration::from_secs(120)).unwrap());
-                payload.set_subject(user.id.unwrap());
-
-                let signer = RsassaJwsAlgorithm::Rs256
-                    .signer_from_pem(std::env::var("ACCESS_TOKEN_PRIVATE_KEY").unwrap())
+                let mut claims = Claims::new_expires_in(&Duration::from_secs(120)).unwrap();
+                claims
+                    .subject(user.id.unwrap().to_string().as_str())
                     .unwrap();
 
-                let token = josekit::jwt::encode_with_signer(&payload, &header, &signer).unwrap();
-
-                let mut header = JweHeader::new();
-                header.set_token_type("JWT");
-                header.set_content_encryption("A128CBC-HS256");
-
-                let encryptor = RsaesJweAlgorithm::RsaOaep
-                    .encrypter_from_pem(std::env::var("ACCESS_TOKEN_PUBLIC_KEY").unwrap())
-                    .unwrap();
-
-                let token = JweContext::new()
-                    .serialize_compact(token.as_bytes(), &header, &encryptor)
-                    .unwrap();
+                let token = local::encrypt(
+                    &SymmetricKey::<V4>::try_from(std::env::var("PASERK").unwrap().as_str())
+                        .unwrap(),
+                    &claims,
+                    None,
+                    None,
+                )
+                .unwrap();
 
                 (
                     jar.add(

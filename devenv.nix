@@ -4,8 +4,7 @@
   # https://devenv.sh/basics/
   env.DATABASE_URL = "postgres://postgres:password@localhost:5432/tankard?sslmode=disable";
   env.DATABASE_DEV_URL = "postgres://postgres:password@localhost:5432/tankard_dev?sslmode=disable";
-  env.ACCESS_TOKEN_PRIVATE_KEY = builtins.readFile ./private_key.pem;
-  env.ACCESS_TOKEN_PUBLIC_KEY = builtins.readFile ./public_key.pem;
+  env.PASERK = "k4.local.MBRMvUocz642L1jhYCP7ORQ1QXHc6ryMXcASX780D-Q";
 
   # https://devenv.sh/packages/
   packages = [
@@ -14,7 +13,6 @@
     pkgs.cargo-watch
     pkgs.sleek
     pkgs.tailwindcss
-    pkgs.openssl
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
     frameworks.Security
