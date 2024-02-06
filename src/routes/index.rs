@@ -1,14 +1,21 @@
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    Extension, Form,
+    Form, Router,
 };
-use axum_extra::{extract::CookieJar, routing::TypedPath};
+use axum_extra::{
+    extract::CookieJar,
+    routing::{RouterExt, TypedPath},
+};
 use maud::{html, Markup};
 use serde::Deserialize;
 use sqlx::{Pool, Postgres};
 
-use crate::{layout, sign_in, CurrentUser};
+use crate::{layout, sign_in, AppState};
+
+pub(crate) fn route() -> Router<AppState> {
+    Router::new().typed_get(get).typed_post(post)
+}
 
 #[derive(TypedPath)]
 #[typed_path("/")]
@@ -29,11 +36,7 @@ pub(crate) fn page() -> Markup {
     })
 }
 
-pub(crate) async fn get(
-    _: Path,
-    Extension(current_user): Extension<Option<CurrentUser>>,
-) -> Markup {
-    println!("{current_user:?}");
+pub(crate) async fn get(_: Path) -> Markup {
     page()
 }
 

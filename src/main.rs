@@ -2,16 +2,14 @@ use std::{error::Error, net::Ipv4Addr, time::Duration};
 
 use axum::{
     extract::Request,
-    middleware::{self, Next},
-    response::Response,
-    Extension, Router,
+    http::StatusCode,
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Router,
 };
-use axum_extra::{
-    extract::{
-        cookie::{Cookie, SameSite},
-        CookieJar,
-    },
-    routing::RouterExt,
+use axum_extra::extract::{
+    cookie::{Cookie, SameSite},
+    CookieJar,
 };
 use maud::{html, Markup, DOCTYPE};
 use pasetors::{
@@ -24,12 +22,13 @@ use pasetors::{
 };
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::net::TcpListener;
-use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
 use tower_livereload::LiveReloadLayer;
 
 mod routes;
+
+type AppState = Pool<Postgres>;
 
 #[derive(Clone, Debug)]
 struct CurrentUser {
@@ -124,30 +123,26 @@ async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
                 .map(|v| v.to_string())
         })
     {
-        req.extensions_mut().insert(Some(CurrentUser { id }));
+        req.extensions_mut().insert(CurrentUser { id });
+        next.run(req).await
+    } else {
+        StatusCode::UNAUTHORIZED.into_response()
     }
-
-    next.run(req).await
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let conn_str = std::env::var("DATABASE_URL")?;
-    let pool = PgPoolOptions::new()
+    let pool: AppState = PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(Duration::from_secs(3))
         .connect(&conn_str)
         .await?;
 
     let app = Router::new()
-        .typed_get(routes::index::get)
-        .typed_post(routes::index::post)
+        .merge(routes::index::route())
+        .merge(routes::profile::route())
         .fallback_service(ServeDir::new("static"))
-        .layer(
-            ServiceBuilder::new()
-                .layer(Extension(None::<CurrentUser>))
-                .layer(middleware::from_fn(auth)),
-        )
         .with_state(pool);
 
     #[cfg(debug_assertions)]
