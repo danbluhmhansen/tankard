@@ -6,13 +6,23 @@ use axum::{
     response::Response,
     Extension, Router,
 };
-use axum_extra::{extract::CookieJar, routing::RouterExt};
+use axum_extra::{
+    extract::{
+        cookie::{Cookie, SameSite},
+        CookieJar,
+    },
+    routing::RouterExt,
+};
 use maud::{html, Markup, DOCTYPE};
 use pasetors::{
-    claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
+    claims::{Claims, ClaimsValidationRules},
+    keys::SymmetricKey,
+    local,
+    token::UntrustedToken,
+    version4::V4,
     Local,
 };
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
@@ -50,6 +60,46 @@ fn layout(main: Markup) -> Markup {
                 }
             }
         }
+    }
+}
+
+async fn sign_in<'a>(
+    pool: &Pool<Postgres>,
+    username: String,
+    password: String,
+) -> Result<Option<Cookie<'a>>, Box<dyn Error>> {
+    let user = sqlx::query!(
+        "SELECT id, check_password(id, $2) FROM users WHERE username = $1 LIMIT 1;",
+        username,
+        password
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if let Some(id) = user
+        .id
+        .zip(user.check_password)
+        .filter(|(_, c)| *c)
+        .map(|(id, _)| id.to_string())
+    {
+        let mut claims = Claims::new_expires_in(&Duration::from_secs(120))?;
+        claims.subject(id.as_str())?;
+
+        let token = local::encrypt(
+            &SymmetricKey::<V4>::try_from(std::env::var("PASERK")?.as_str())?,
+            &claims,
+            None,
+            None,
+        )?;
+
+        Ok(Some(
+            Cookie::build(("session_id", token))
+                .http_only(true)
+                .same_site(SameSite::Strict)
+                .build(),
+        ))
+    } else {
+        Ok(None)
     }
 }
 

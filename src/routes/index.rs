@@ -1,23 +1,14 @@
-use std::time::Duration;
-
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
     Extension, Form,
 };
-use axum_extra::{
-    extract::{
-        cookie::{Cookie, SameSite},
-        CookieJar,
-    },
-    routing::TypedPath,
-};
+use axum_extra::{extract::CookieJar, routing::TypedPath};
 use maud::{html, Markup};
-use pasetors::{claims::Claims, keys::SymmetricKey, local, version4::V4};
 use serde::Deserialize;
 use sqlx::{Pool, Postgres};
 
-use crate::{layout, CurrentUser};
+use crate::{layout, sign_in, CurrentUser};
 
 #[derive(TypedPath)]
 #[typed_path("/")]
@@ -61,42 +52,8 @@ pub(crate) async fn post(
 ) -> Response {
     match form.submit.as_str() {
         "signin" => {
-            let user = sqlx::query!("SELECT id FROM users WHERE username = $1;", form.username)
-                .fetch_one(&state)
-                .await
-                .unwrap();
-
-            let success =
-                sqlx::query_scalar!("SELECT check_password($1, $2);", user.id, form.password)
-                    .fetch_one(&state)
-                    .await
-                    .unwrap();
-
-            if success.is_some_and(|s| s) {
-                let mut claims = Claims::new_expires_in(&Duration::from_secs(120)).unwrap();
-                claims
-                    .subject(user.id.unwrap().to_string().as_str())
-                    .unwrap();
-
-                let token = local::encrypt(
-                    &SymmetricKey::<V4>::try_from(std::env::var("PASERK").unwrap().as_str())
-                        .unwrap(),
-                    &claims,
-                    None,
-                    None,
-                )
-                .unwrap();
-
-                (
-                    jar.add(
-                        Cookie::build(("session_id", token))
-                            .http_only(true)
-                            .same_site(SameSite::Strict)
-                            .build(),
-                    ),
-                    page(),
-                )
-                    .into_response()
+            if let Ok(Some(cookie)) = sign_in(&state, form.username, form.password).await {
+                (jar.add(cookie), page()).into_response()
             } else {
                 page().into_response()
             }
