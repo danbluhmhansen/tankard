@@ -81,7 +81,8 @@ async fn sign_in<'a>(
         .filter(|(_, c)| *c)
         .map(|(id, _)| id.to_string())
     {
-        let mut claims = Claims::new_expires_in(&Duration::from_secs(120))?;
+        let exp = Duration::from_secs(120);
+        let mut claims = Claims::new_expires_in(&exp)?;
         claims.subject(id.as_str())?;
 
         let token = local::encrypt(
@@ -93,6 +94,7 @@ async fn sign_in<'a>(
 
         Ok(Some(
             Cookie::build(("session_id", token))
+                .max_age(exp.try_into()?)
                 .http_only(true)
                 .same_site(SameSite::Strict)
                 .build(),
