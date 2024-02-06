@@ -1,34 +1,25 @@
 use std::{error::Error, net::Ipv4Addr, time::Duration};
 
 use axum::{
-    extract::{Request, State},
+    extract::Request,
     middleware::{self, Next},
-    response::{IntoResponse, Response},
-    Extension, Form, Router,
+    response::Response,
+    Extension, Router,
 };
-use axum_extra::{
-    extract::{
-        cookie::{Cookie, SameSite},
-        CookieJar,
-    },
-    routing::{RouterExt, TypedPath},
-};
+use axum_extra::{extract::CookieJar, routing::RouterExt};
 use maud::{html, Markup, DOCTYPE};
 use pasetors::{
-    claims::{Claims, ClaimsValidationRules},
-    keys::SymmetricKey,
-    local,
-    token::UntrustedToken,
-    version4::V4,
+    claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
     Local,
 };
-use serde::Deserialize;
-use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
 use tower_livereload::LiveReloadLayer;
+
+mod routes;
 
 #[derive(Clone, Debug)]
 struct CurrentUser {
@@ -59,99 +50,6 @@ fn layout(main: Markup) -> Markup {
                 }
             }
         }
-    }
-}
-
-#[derive(TypedPath)]
-#[typed_path("/")]
-struct RootPath;
-
-fn root_page() -> Markup {
-    layout(html! {
-        form method="post" {
-            input type="text" name="username" placeholder="Username" required class="bg-transparent";
-            input type="password" name="password" placeholder="Password" required class="bg-transparent";
-            button type="submit" name="submit" value="signin" { "Sign in" }
-        }
-        form method="post" {
-            input type="text" name="username" placeholder="Username" required class="bg-transparent";
-            input type="password" name="password" placeholder="Password" required class="bg-transparent";
-            button type="submit" name="submit" value="signup" { "Sign up" }
-        }
-    })
-}
-
-async fn root_get(_: RootPath, Extension(current_user): Extension<Option<CurrentUser>>) -> Markup {
-    println!("{current_user:?}");
-    root_page()
-}
-
-#[derive(Deserialize)]
-struct RootPayload {
-    username: String,
-    password: String,
-    submit: String,
-}
-
-async fn root_post(
-    _: RootPath,
-    State(state): State<Pool<Postgres>>,
-    jar: CookieJar,
-    Form(form): Form<RootPayload>,
-) -> Response {
-    match form.submit.as_str() {
-        "signin" => {
-            let user = sqlx::query!("SELECT id FROM users WHERE username = $1;", form.username)
-                .fetch_one(&state)
-                .await
-                .unwrap();
-
-            let success =
-                sqlx::query_scalar!("SELECT check_password($1, $2);", user.id, form.password)
-                    .fetch_one(&state)
-                    .await
-                    .unwrap();
-
-            if success.is_some_and(|s| s) {
-                let mut claims = Claims::new_expires_in(&Duration::from_secs(120)).unwrap();
-                claims
-                    .subject(user.id.unwrap().to_string().as_str())
-                    .unwrap();
-
-                let token = local::encrypt(
-                    &SymmetricKey::<V4>::try_from(std::env::var("PASERK").unwrap().as_str())
-                        .unwrap(),
-                    &claims,
-                    None,
-                    None,
-                )
-                .unwrap();
-
-                (
-                    jar.add(
-                        Cookie::build(("session_id", token))
-                            .http_only(true)
-                            .same_site(SameSite::Strict)
-                            .build(),
-                    ),
-                    root_page(),
-                )
-                    .into_response()
-            } else {
-                root_page().into_response()
-            }
-        }
-        "signup" => {
-            let _ = sqlx::query!("SELECT init_user($1, $2);", form.username, form.password)
-                .fetch_all(&state)
-                .await;
-            let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
-                .fetch_all(&state)
-                .await;
-
-            root_page().into_response()
-        }
-        _ => unreachable!(),
     }
 }
 
@@ -192,8 +90,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     let app = Router::new()
-        .typed_get(root_get)
-        .typed_post(root_post)
+        .typed_get(routes::index::get)
+        .typed_post(routes::index::post)
         .fallback_service(ServeDir::new("static"))
         .layer(
             ServiceBuilder::new()
