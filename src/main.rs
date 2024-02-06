@@ -1,10 +1,10 @@
 use std::{error::Error, net::Ipv4Addr, time::Duration};
 
 use axum::{
-    extract::State,
+    extract::{Request, State},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::post,
-    Form, Router,
+    Extension, Form, Router,
 };
 use axum_extra::{
     extract::{
@@ -25,9 +25,15 @@ use pasetors::{
 use serde::Deserialize;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::net::TcpListener;
+use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
 use tower_livereload::LiveReloadLayer;
+
+#[derive(Clone, Debug)]
+struct CurrentUser {
+    id: String,
+}
 
 fn layout(main: Markup) -> Markup {
     html! {
@@ -75,23 +81,8 @@ fn root_page() -> Markup {
     })
 }
 
-async fn root_get(_: RootPath, jar: CookieJar) -> Markup {
-    let token = jar.get("session_id").unwrap().value();
-    if let Ok(token) = local::decrypt(
-        &SymmetricKey::<V4>::try_from(std::env::var("PASERK").unwrap().as_str()).unwrap(),
-        &UntrustedToken::<Local, V4>::try_from(token).unwrap(),
-        &ClaimsValidationRules::new(),
-        None,
-        None,
-    ) {
-        println!(
-            "{:?}",
-            token
-                .payload_claims()
-                .and_then(|c| c.get_claim("sub"))
-                .and_then(|v| v.as_str())
-        );
-    }
+async fn root_get(_: RootPath, Extension(current_user): Extension<Option<CurrentUser>>) -> Markup {
+    println!("{current_user:?}");
     root_page()
 }
 
@@ -103,6 +94,7 @@ struct RootPayload {
 }
 
 async fn root_post(
+    _: RootPath,
     State(state): State<Pool<Postgres>>,
     jar: CookieJar,
     Form(form): Form<RootPayload>,
@@ -163,6 +155,33 @@ async fn root_post(
     }
 }
 
+async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
+    if let Some(id) = jar
+        .get("session_id")
+        .map(|c| c.value())
+        .and_then(|token| {
+            local::decrypt(
+                &SymmetricKey::<V4>::try_from(std::env::var("PASERK").unwrap().as_str()).unwrap(),
+                &UntrustedToken::<Local, V4>::try_from(token).unwrap(),
+                &ClaimsValidationRules::new(),
+                None,
+                None,
+            )
+            .ok()
+        })
+        .and_then(|token| {
+            token
+                .payload_claims()
+                .and_then(|c| c.get_claim("sub"))
+                .map(|v| v.to_string())
+        })
+    {
+        req.extensions_mut().insert(Some(CurrentUser { id }));
+    }
+
+    next.run(req).await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let conn_str = std::env::var("DATABASE_URL")?;
@@ -173,9 +192,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     let app = Router::new()
-        .route("/", post(root_post))
         .typed_get(root_get)
+        .typed_post(root_post)
         .fallback_service(ServeDir::new("static"))
+        .layer(
+            ServiceBuilder::new()
+                .layer(Extension(None::<CurrentUser>))
+                .layer(middleware::from_fn(auth)),
+        )
         .with_state(pool);
 
     #[cfg(debug_assertions)]
