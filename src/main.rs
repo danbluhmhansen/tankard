@@ -2,9 +2,8 @@ use std::{error::Error, net::Ipv4Addr, time::Duration};
 
 use axum::{
     extract::Request,
-    http::StatusCode,
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     Router,
 };
 use axum_extra::extract::{
@@ -128,7 +127,7 @@ async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
         req.extensions_mut().insert(CurrentUser { id });
         next.run(req).await
     } else {
-        StatusCode::UNAUTHORIZED.into_response()
+        Redirect::to("/").into_response()
     }
 }
 
