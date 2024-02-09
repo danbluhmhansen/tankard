@@ -22,7 +22,7 @@
 
   # https://devenv.sh/scripts/
   scripts.watch-server.exec = "cargo watch --exec run";
-  scripts.watch-bundle.exec = "bun build index.ts --watch --outfile=static/bundle.js";
+  scripts.watch-bundle.exec = "bun build alpine.ts htmx.ts --splitting --watch --outdir=dist";
   scripts.watch-unocss.exec = "bun unocss --watch";
   scripts.schema-diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl | bat --language sql";
 

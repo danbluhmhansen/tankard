@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .merge(routes::signin::route())
         .merge(routes::signout::route())
         .merge(routes::signup::route())
-        .fallback_service(ServeDir::new("static"))
+        .fallback_service(ServeDir::new("dist"))
         .layer(middleware::from_fn(auth))
         .with_state(pool);
 

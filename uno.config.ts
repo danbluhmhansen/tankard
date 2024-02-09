@@ -3,7 +3,7 @@ import { defineConfig, presetUno } from 'unocss';
 export default defineConfig({
   cli: {
     entry: {
-      outFile: 'static/site.css',
+      outFile: 'dist/site.css',
       patterns: ['src/**/*.rs'],
     },
   },

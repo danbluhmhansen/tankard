@@ -3,6 +3,8 @@
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
+    "@types/alpinejs": "^3.13.6",
+    "@types/alpinejs__morph": "^3.13.3",
     "@types/bun": "latest",
     "@unocss/cli": "^0.58.5",
     "unocss": "^0.58.5"
@@ -11,6 +13,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@alpinejs/morph": "^3.13.5",
     "alpinejs": "^3.13.5",
     "htmx.org": "^1.9.10"
   }
