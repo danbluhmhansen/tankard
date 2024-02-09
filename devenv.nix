@@ -12,7 +12,8 @@
     pkgs.atlas
     pkgs.cargo-watch
     pkgs.sleek
-    pkgs.tailwindcss
+    pkgs.bun
+    pkgs.nodePackages.typescript-language-server
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
     frameworks.Security
@@ -20,8 +21,12 @@
   ]);
 
   # https://devenv.sh/scripts/
-  scripts.schema_diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl | bat --language sql";
-  scripts.tw_watch.exec = "tailwindcss --input tailwind.css --output static/site.css --watch";
+  scripts.watch-server.exec = "cargo watch --exec run";
+  scripts.watch-bundle.exec = "bun build index.ts --watch --outfile=static/bundle.js";
+  scripts.watch-unocss.exec = "bun unocss --watch";
+  scripts.schema-diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl | bat --language sql";
+
+  enterShell = "bun install";
 
   # https://devenv.sh/languages/
   languages.rust.enable = true;
@@ -36,8 +41,9 @@
   };
 
   # https://devenv.sh/processes/
-  processes.watch.exec = "cargo watch --exec run";
-  # processes.tw_watch.exec = "tw_watch";
+  processes.watch-server.exec = "watch-server";
+  processes.watch-bundle.exec = "watch-bundle";
+  processes.watch-unocss.exec = "watch-unocss";
 
   # https://devenv.sh/services/
   services.postgres = {

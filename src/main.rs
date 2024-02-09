@@ -2,21 +2,13 @@ use std::{error::Error, net::Ipv4Addr, time::Duration};
 
 use axum::{
     extract::Request,
-    middleware::Next,
-    response::{IntoResponse, Redirect, Response},
+    middleware::{self, Next},
+    response::Response,
     Router,
 };
-use axum_extra::extract::{
-    cookie::{Cookie, SameSite},
-    CookieJar,
-};
-use maud::{html, Markup, DOCTYPE};
+use axum_extra::extract::CookieJar;
 use pasetors::{
-    claims::{Claims, ClaimsValidationRules},
-    keys::SymmetricKey,
-    local,
-    token::UntrustedToken,
-    version4::V4,
+    claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
     Local,
 };
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
@@ -25,6 +17,7 @@ use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
 use tower_livereload::LiveReloadLayer;
 
+mod components;
 mod routes;
 
 type AppState = Pool<Postgres>;
@@ -32,75 +25,6 @@ type AppState = Pool<Postgres>;
 #[derive(Clone, Debug)]
 struct CurrentUser {
     id: String,
-}
-
-fn layout(main: Markup) -> Markup {
-    html! {
-        (DOCTYPE)
-        html class="dark:text-white dark:bg-slate-900" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width,initial-scale=1";
-                link rel="stylesheet" type="text/css" href="site.css";
-                script
-                    src="https://unpkg.com/htmx.org@1.9.10"
-                    integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC"
-                    crossorigin="anonymous" {}
-            }
-            body {
-                header {
-                    nav class="flex justify-center p-4" {
-                        h1 { "Tankard" }
-                    }
-                }
-                main class="container mx-auto" {
-                    (main)
-                }
-            }
-        }
-    }
-}
-
-async fn sign_in<'a>(
-    pool: &Pool<Postgres>,
-    username: String,
-    password: String,
-) -> Result<Option<Cookie<'a>>, Box<dyn Error>> {
-    let user = sqlx::query!(
-        "SELECT id, check_password(id, $2) FROM users WHERE username = $1 LIMIT 1;",
-        username,
-        password
-    )
-    .fetch_one(pool)
-    .await?;
-
-    if let Some(id) = user
-        .id
-        .zip(user.check_password)
-        .filter(|(_, c)| *c)
-        .map(|(id, _)| id.to_string())
-    {
-        let exp = Duration::from_secs(120);
-        let mut claims = Claims::new_expires_in(&exp)?;
-        claims.subject(id.as_str())?;
-
-        let token = local::encrypt(
-            &SymmetricKey::<V4>::try_from(std::env::var("PASERK")?.as_str())?,
-            &claims,
-            None,
-            None,
-        )?;
-
-        Ok(Some(
-            Cookie::build(("session_id", token))
-                .max_age(exp.try_into()?)
-                .http_only(true)
-                .same_site(SameSite::Strict)
-                .build(),
-        ))
-    } else {
-        Ok(None)
-    }
 }
 
 async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
@@ -124,11 +48,11 @@ async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
                 .map(|v| v.to_string())
         })
     {
-        req.extensions_mut().insert(CurrentUser { id });
-        next.run(req).await
+        req.extensions_mut().insert(Some(CurrentUser { id }));
     } else {
-        Redirect::to("/").into_response()
+        req.extensions_mut().insert(None::<CurrentUser>);
     }
+    next.run(req).await
 }
 
 #[tokio::main]
@@ -143,7 +67,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let app = Router::new()
         .merge(routes::index::route())
         .merge(routes::profile::route())
+        .merge(routes::signin::route())
+        .merge(routes::signout::route())
+        .merge(routes::signup::route())
         .fallback_service(ServeDir::new("static"))
+        .layer(middleware::from_fn(auth))
         .with_state(pool);
 
     #[cfg(debug_assertions)]

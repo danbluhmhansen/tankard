@@ -12,4 +12,8 @@ devenv.local.nix
 /target
 
 # tankard
+static/bundle.js
 static/site.css
+
+# bun
+node_modules/

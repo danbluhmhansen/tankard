@@ -1,0 +1,17 @@
+{
+  "name": "tankard",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@unocss/cli": "^0.58.5",
+    "unocss": "^0.58.5"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "alpinejs": "^3.13.5",
+    "htmx.org": "^1.9.10"
+  }
+}

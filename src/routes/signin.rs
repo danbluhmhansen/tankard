@@ -1,0 +1,119 @@
+use std::{error::Error, time::Duration};
+
+use axum::{
+    extract::State,
+    response::{IntoResponse, Redirect, Response},
+    Extension, Form, Router,
+};
+use axum_extra::{
+    extract::{
+        cookie::{Cookie, SameSite},
+        CookieJar,
+    },
+    routing::{RouterExt, TypedPath},
+};
+use maud::{html, Markup};
+use pasetors::{claims::Claims, keys::SymmetricKey, local, version4::V4};
+use serde::Deserialize;
+use sqlx::{Pool, Postgres};
+
+use crate::{components::layout, AppState, CurrentUser};
+
+use super::profile;
+
+async fn sign_in<'a>(
+    pool: &Pool<Postgres>,
+    username: String,
+    password: String,
+) -> Result<Option<Cookie<'a>>, Box<dyn Error>> {
+    let user = sqlx::query!(
+        "SELECT id, check_password(id, $2) FROM users WHERE username = $1 LIMIT 1;",
+        username,
+        password
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if let Some(id) = user
+        .id
+        .zip(user.check_password)
+        .filter(|(_, c)| *c)
+        .map(|(id, _)| id.to_string())
+    {
+        let exp = Duration::from_secs(120);
+        let mut claims = Claims::new_expires_in(&exp)?;
+        claims.subject(id.as_str())?;
+
+        let token = local::encrypt(
+            &SymmetricKey::<V4>::try_from(std::env::var("PASERK")?.as_str())?,
+            &claims,
+            None,
+            None,
+        )?;
+
+        Ok(Some(
+            Cookie::build(("session_id", token))
+                .max_age(exp.try_into()?)
+                .http_only(true)
+                .same_site(SameSite::Strict)
+                .build(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn route() -> Router<AppState> {
+    Router::new().typed_get(get).typed_post(post)
+}
+
+#[derive(TypedPath)]
+#[typed_path("/signin")]
+pub(crate) struct Path;
+
+pub(crate) fn page(user: Option<CurrentUser>) -> Markup {
+    layout(
+        html! {
+            form method="post" class="flex gap-2" {
+                input
+                    type="text"
+                    name="username"
+                    placeholder="Username"
+                    required
+                    class="bg-transparent p-1 border border-black dark:border-white";
+                input
+                    type="password"
+                    name="password"
+                    placeholder="Password"
+                    required
+                    class="bg-transparent p-1 border border-black dark:border-white";
+                button type="submit" { "Sign in" }
+            }
+        },
+        user,
+    )
+}
+
+pub(crate) async fn get(_: Path, Extension(user): Extension<Option<CurrentUser>>) -> Markup {
+    page(user)
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Payload {
+    username: String,
+    password: String,
+}
+
+pub(crate) async fn post(
+    _: Path,
+    Extension(user): Extension<Option<CurrentUser>>,
+    State(state): State<Pool<Postgres>>,
+    jar: CookieJar,
+    Form(form): Form<Payload>,
+) -> Response {
+    if let Ok(Some(cookie)) = sign_in(&state, form.username, form.password).await {
+        (jar.add(cookie), Redirect::to(profile::Path.to_uri().path())).into_response()
+    } else {
+        page(user).into_response()
+    }
+}
