@@ -1,11 +1,19 @@
 use maud::{html, Markup, DOCTYPE};
 
-use crate::{routes, CurrentUser};
+use crate::routes;
 
-pub(crate) fn layout(main: Markup, user: Option<CurrentUser>) -> Markup {
+pub(crate) fn boost(main: Markup, signed_in: bool, boosted: bool) -> Markup {
+    if boosted {
+        body(main, signed_in)
+    } else {
+        full(main, signed_in)
+    }
+}
+
+fn full(main: Markup, signed_in: bool) -> Markup {
     html! {
         (DOCTYPE)
-        html class="dark:text-white dark:bg-slate-900" {
+        html hx-boost="true" class="dark:text-white dark:bg-slate-900" {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width,initial-scale=1";
@@ -19,21 +27,27 @@ pub(crate) fn layout(main: Markup, user: Option<CurrentUser>) -> Markup {
                 link rel="stylesheet" type="text/css" href="site.css";
                 script defer src="bundle.js" {}
             }
-            body {
-                header {
-                    nav class="flex justify-center p-4 gap-2" {
-                        a href=(routes::index::Path) { "Tankard" }
-                        @if user.is_some() {
-                            a href=(routes::profile::Path) { "Profile" }
-                            form action=(routes::signout::Path) method="post" { button type="submit" { "Sign out" } }
-                        } @else {
-                            a href=(routes::signup::Path) { "Sign up" }
-                            a href=(routes::signin::Path) { "Sign in" }
-                        }
+            (body(main, signed_in))
+        }
+    }
+}
+
+fn body(main: Markup, signed_in: bool) -> Markup {
+    html! {
+        body {
+            header {
+                nav class="flex justify-center p-4 gap-2" {
+                    a href=(routes::index::Path) { "Tankard" }
+                    @if signed_in {
+                        a href=(routes::profile::Path) { "Profile" }
+                        form action=(routes::signout::Path) method="post" { button type="submit" { "Sign out" } }
+                    } @else {
+                        a href=(routes::signup::Path) { "Sign up" }
+                        a href=(routes::signin::Path) { "Sign in" }
                     }
                 }
-                main class="container mx-auto" { (main) }
             }
+            main class="container mx-auto" { (main) }
         }
     }
 }

@@ -12,12 +12,13 @@ use axum_extra::{
     },
     routing::{RouterExt, TypedPath},
 };
+use axum_htmx::HxBoosted;
 use maud::{html, Markup};
 use pasetors::{claims::Claims, keys::SymmetricKey, local, version4::V4};
 use serde::Deserialize;
 use sqlx::{Pool, Postgres};
 
-use crate::{components::layout, AppState, CurrentUser};
+use crate::{components::boost, AppState, CurrentUser};
 
 use super::profile;
 
@@ -71,31 +72,32 @@ pub(crate) fn route() -> Router<AppState> {
 #[typed_path("/signin")]
 pub(crate) struct Path;
 
-pub(crate) fn page(user: Option<CurrentUser>) -> Markup {
-    layout(
-        html! {
-            form method="post" class="flex gap-2" {
-                input
-                    type="text"
-                    name="username"
-                    placeholder="Username"
-                    required
-                    class="bg-transparent p-1 border border-black dark:border-white";
-                input
-                    type="password"
-                    name="password"
-                    placeholder="Password"
-                    required
-                    class="bg-transparent p-1 border border-black dark:border-white";
-                button type="submit" { "Sign in" }
-            }
-        },
-        user,
-    )
+pub(crate) fn page() -> Markup {
+    html! {
+        form method="post" class="flex gap-2" {
+            input
+                type="text"
+                name="username"
+                placeholder="Username"
+                required
+                class="bg-transparent p-1 border border-black dark:border-white";
+            input
+                type="password"
+                name="password"
+                placeholder="Password"
+                required
+                class="bg-transparent p-1 border border-black dark:border-white";
+            button type="submit" { "Sign in" }
+        }
+    }
 }
 
-pub(crate) async fn get(_: Path, Extension(user): Extension<Option<CurrentUser>>) -> Markup {
-    page(user)
+pub(crate) async fn get(
+    _: Path,
+    HxBoosted(boosted): HxBoosted,
+    Extension(user): Extension<Option<CurrentUser>>,
+) -> Markup {
+    boost(page(), user.is_some(), boosted)
 }
 
 #[derive(Deserialize)]
@@ -106,6 +108,7 @@ pub(crate) struct Payload {
 
 pub(crate) async fn post(
     _: Path,
+    HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
     State(state): State<Pool<Postgres>>,
     jar: CookieJar,
@@ -114,6 +117,6 @@ pub(crate) async fn post(
     if let Ok(Some(cookie)) = sign_in(&state, form.username, form.password).await {
         (jar.add(cookie), Redirect::to(profile::Path.to_uri().path())).into_response()
     } else {
-        page(user).into_response()
+        boost(page(), user.is_some(), boosted).into_response()
     }
 }
