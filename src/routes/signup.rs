@@ -60,9 +60,13 @@ pub(crate) async fn post(
     State(state): State<Pool<Postgres>>,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
-    let _ = sqlx::query!("SELECT init_user($1, $2);", username, password)
-        .fetch_all(&state)
-        .await;
+    let _ = sqlx::query!(
+        "SELECT id FROM init_user(ARRAY[ROW($1, $2, gen_random_uuid())]::init_user_input[]);",
+        username,
+        password
+    )
+    .fetch_all(&state)
+    .await;
     let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
         .fetch_all(&state)
         .await;

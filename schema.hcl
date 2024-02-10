@@ -2,35 +2,23 @@ schema "public" {
   comment = "standard public schema"
 }
 
-table "event_streams" {
+table "user_streams" {
   schema = schema.public
   column "id" {
     type = uuid
     default = sql("gen_random_uuid()")
   }
-  column "type" {
-    type = int
-  }
-  primary_key {
-    columns = [column.id]
-  }
-  index "type" {
-    columns = [column.type]
-  }
+  primary_key { columns = [column.id] }
 }
 
-table "events" {
+table "user_events" {
   schema = schema.public
-  column "stream_id" {
-    type = uuid
-  }
+  column "stream_id" { type = uuid }
   column "id" {
     type = uuid
     default = sql("gen_random_uuid()")
   }
-  column "name" {
-    type = text
-  }
+  column "name" { type = text }
   column "timestamp" {
     type = timestamptz
     default = sql("clock_timestamp()")
@@ -39,21 +27,56 @@ table "events" {
     type = jsonb
     null = true
   }
-  primary_key "id" {
-    columns = [column.id]
-  }
-  foreign_key "stream_id" {
+  primary_key { columns = [column.id] }
+  foreign_key {
     columns = [column.stream_id]
-    ref_columns = [table.event_streams.column.id]
+    ref_columns = [table.user_streams.column.id]
     on_delete = CASCADE
   }
-  index "stream_id" {
+  index { columns = [column.stream_id] }
+  index { columns = [column.stream_id, column.name] }
+  index { columns = [column.stream_id, column.timestamp] }
+}
+
+table "game_streams" {
+  schema = schema.public
+  column "id" {
+    type = uuid
+    default = sql("gen_random_uuid()")
+  }
+  column "user_id" { type = uuid }
+  primary_key { columns = [column.id] }
+  foreign_key {
+    columns = [column.user_id]
+    ref_columns = [table.user_streams.column.id]
+    on_delete = CASCADE
+  }
+  index { columns = [column.user_id] }
+}
+
+table "game_events" {
+  schema = schema.public
+  column "stream_id" { type = uuid }
+  column "id" {
+    type = uuid
+    default = sql("gen_random_uuid()")
+  }
+  column "name" { type = text }
+  column "timestamp" {
+    type = timestamptz
+    default = sql("clock_timestamp()")
+  }
+  column "data" {
+    type = jsonb
+    null = true
+  }
+  primary_key { columns = [column.id] }
+  foreign_key {
     columns = [column.stream_id]
+    ref_columns = [table.game_streams.column.id]
+    on_delete = CASCADE
   }
-  index "stream_id_name" {
-    columns = [column.stream_id, column.name,]
-  }
-  index "stream_id_timestamp" {
-    columns = [column.stream_id, column.timestamp,]
-  }
+  index { columns = [column.stream_id] }
+  index { columns = [column.stream_id, column.name] }
+  index { columns = [column.stream_id, column.timestamp] }
 }

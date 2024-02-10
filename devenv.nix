@@ -11,7 +11,6 @@
     pkgs.git
     pkgs.atlas
     pkgs.cargo-watch
-    pkgs.sleek
     pkgs.bun
     pkgs.nodePackages.typescript-language-server
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
@@ -24,7 +23,15 @@
   scripts.watch-server.exec = "cargo watch --exec run";
   scripts.watch-bundle.exec = "bun build alpine.ts htmx.ts --splitting --watch --outdir=dist";
   scripts.watch-unocss.exec = "bun unocss --watch";
-  scripts.schema-diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl | bat --language sql";
+
+  scripts.db-diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl | bat --language sql";
+  scripts.db-apply.exec = "atlas schema apply --env local";
+  scripts.db-init.exec = ''
+    psql --dbname=tankard --file=./data/init.sql
+    psql --dbname=tankard --file=./data/users.sql
+    psql --dbname=tankard --file=./data/games.sql
+    psql --dbname=tankard --file=./data/auth.sql
+  '';
 
   enterShell = "bun install";
 
@@ -41,7 +48,7 @@
   };
 
   # https://devenv.sh/processes/
-  processes.watch-server.exec = "watch-server";
+  # processes.watch-server.exec = "watch-server";
   processes.watch-bundle.exec = "watch-bundle";
   processes.watch-unocss.exec = "watch-unocss";
 
