@@ -21,7 +21,6 @@ fn full(main: Markup, signed_in: bool) -> Markup {
                 link rel="stylesheet" type="text/css" href="reset.css";
                 link rel="stylesheet" type="text/css" href="site.css";
                 script type="module" src="chunk-0455e53fab4244b1.js" {}
-                // FIXME: alpinejs does not work on first load
                 script type="module" src="alpine.js" {}
                 script type="module" src="htmx.js" {}
             }
@@ -32,7 +31,7 @@ fn full(main: Markup, signed_in: bool) -> Markup {
 
 fn body(main: Markup, signed_in: bool) -> Markup {
     html! {
-        body {
+        body x-data {
             header {
                 nav class="flex justify-center p-4 gap-2" {
                     a href=(routes::index::Path) { "Tankard" }
