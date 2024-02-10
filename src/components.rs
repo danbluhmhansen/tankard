@@ -36,6 +36,7 @@ fn body(main: Markup, signed_in: bool) -> Markup {
                 nav class="flex justify-center p-4 gap-2" {
                     a href=(routes::index::Path) { "Tankard" }
                     @if signed_in {
+                        a href=(routes::games::Path) { "Games" }
                         a href=(routes::profile::Path) { "Profile" }
                         form action=(routes::signout::Path) method="post" { button type="submit" { "Sign out" } }
                     } @else {
@@ -44,7 +45,7 @@ fn body(main: Markup, signed_in: bool) -> Markup {
                     }
                 }
             }
-            main class="container mx-auto flex flex-col" { (main) }
+            main class="container mx-auto flex flex-col gap-8" { (main) }
         }
     }
 }

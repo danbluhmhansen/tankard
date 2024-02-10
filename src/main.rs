@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     let app = Router::new()
+        .merge(routes::games::route())
         .merge(routes::index::route())
         .merge(routes::profile::route())
         .merge(routes::signin::route())

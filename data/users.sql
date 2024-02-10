@@ -3,7 +3,7 @@ CREATE MATERIALIZED VIEW "users" AS
   SELECT
     s.id,
     e.added,
-	e.updated,
+    e.updated,
     e.data ->> 'username' AS username,
     e.data ->> 'salt' AS salt,
     e.data ->> 'passhash' AS passhash,

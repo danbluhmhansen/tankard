@@ -41,7 +41,7 @@ async fn sign_in<'a>(
         .filter(|(_, c)| *c)
         .map(|(id, _)| id)
     {
-        let exp = Duration::from_secs(120);
+        let exp = Duration::from_secs(60 * 60);
         let mut claims = Claims::new_expires_in(&exp)?;
         claims.subject(&id.to_string())?;
 
