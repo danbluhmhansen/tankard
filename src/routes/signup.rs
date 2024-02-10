@@ -21,7 +21,7 @@ pub(crate) struct Path;
 
 pub(crate) fn page() -> Markup {
     html! {
-        form method="post" class="flex gap-2" {
+        form method="post" class="flex flex-col gap-2" {
             input
                 type="text"
                 name="username"
@@ -58,9 +58,9 @@ pub(crate) async fn post(
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
     State(state): State<Pool<Postgres>>,
-    Form(form): Form<Payload>,
+    Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
-    let _ = sqlx::query!("SELECT init_user($1, $2);", form.username, form.password)
+    let _ = sqlx::query!("SELECT init_user($1, $2);", username, password)
         .fetch_all(&state)
         .await;
     let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")

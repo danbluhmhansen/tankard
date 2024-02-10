@@ -39,11 +39,11 @@ async fn sign_in<'a>(
         .id
         .zip(user.check_password)
         .filter(|(_, c)| *c)
-        .map(|(id, _)| id.to_string())
+        .map(|(id, _)| id)
     {
         let exp = Duration::from_secs(120);
         let mut claims = Claims::new_expires_in(&exp)?;
-        claims.subject(id.as_str())?;
+        claims.subject(&id.to_string())?;
 
         let token = local::encrypt(
             &SymmetricKey::<V4>::try_from(std::env::var("PASERK")?.as_str())?,
@@ -74,7 +74,7 @@ pub(crate) struct Path;
 
 pub(crate) fn page() -> Markup {
     html! {
-        form method="post" class="flex gap-2" {
+        form method="post" class="flex flex-col gap-2" {
             input
                 type="text"
                 name="username"
@@ -112,9 +112,9 @@ pub(crate) async fn post(
     Extension(user): Extension<Option<CurrentUser>>,
     State(state): State<Pool<Postgres>>,
     jar: CookieJar,
-    Form(form): Form<Payload>,
+    Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
-    if let Ok(Some(cookie)) = sign_in(&state, form.username, form.password).await {
+    if let Ok(Some(cookie)) = sign_in(&state, username, password).await {
         (jar.add(cookie), Redirect::to(profile::Path.to_uri().path())).into_response()
     } else {
         boost(page(), user.is_some(), boosted).into_response()

@@ -11,7 +11,7 @@ use pasetors::{
     claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
     Local,
 };
-use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+use sqlx::{postgres::PgPoolOptions, types::Uuid, Pool, Postgres};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
@@ -24,7 +24,7 @@ type AppState = Pool<Postgres>;
 
 #[derive(Clone, Debug)]
 struct CurrentUser {
-    id: String,
+    id: Uuid,
 }
 
 async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
@@ -45,7 +45,8 @@ async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
             token
                 .payload_claims()
                 .and_then(|c| c.get_claim("sub"))
-                .map(|v| v.to_string())
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
         })
     {
         req.extensions_mut().insert(Some(CurrentUser { id }));

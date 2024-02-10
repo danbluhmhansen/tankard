@@ -44,7 +44,7 @@ fn body(main: Markup, signed_in: bool) -> Markup {
                     }
                 }
             }
-            main class="container mx-auto" { (main) }
+            main class="container mx-auto flex flex-col" { (main) }
         }
     }
 }
