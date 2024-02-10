@@ -33,7 +33,7 @@ fn body(main: Markup, signed_in: bool) -> Markup {
     html! {
         body x-data {
             header {
-                nav class="flex justify-center p-4 gap-2" {
+                nav class="flex gap-2 justify-center p-4" {
                     a href=(routes::index::Path) { "Tankard" }
                     @if signed_in {
                         a href=(routes::games::Path) { "Games" }
@@ -45,7 +45,7 @@ fn body(main: Markup, signed_in: bool) -> Markup {
                     }
                 }
             }
-            main class="container mx-auto flex flex-col gap-8" { (main) }
+            main class="container flex flex-col gap-8 mx-auto" { (main) }
         }
     }
 }

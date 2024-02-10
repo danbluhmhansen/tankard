@@ -80,13 +80,13 @@ pub(crate) fn page() -> Markup {
                 name="username"
                 placeholder="Username"
                 required
-                class="bg-transparent p-1 border border-black dark:border-white";
+                class="p-1 bg-transparent border border-black dark:border-white";
             input
                 type="password"
                 name="password"
                 placeholder="Password"
                 required
-                class="bg-transparent p-1 border border-black dark:border-white";
+                class="p-1 bg-transparent border border-black dark:border-white";
             button type="submit" { "Sign in" }
         }
     }

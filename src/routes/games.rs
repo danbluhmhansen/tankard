@@ -38,12 +38,12 @@ pub(crate) async fn page(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
                 name="name"
                 placeholder="Name"
                 required
-                class="bg-transparent p-1 border border-black dark:border-white";
+                class="p-1 bg-transparent border border-black dark:border-white";
             input
                 type="textarea"
                 name="description"
                 placeholder="Description"
-                class="bg-transparent p-1 border border-black dark:border-white";
+                class="p-1 bg-transparent border border-black dark:border-white";
             button type="submit" { "Add" }
         }
     }
