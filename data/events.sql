@@ -50,3 +50,18 @@ create index "idx_user_events_stream_id_name" on "user_events" ("stream_id", "na
 drop index if exists "idx_user_events_stream_id_timestamp";
 
 create index "idx_user_events_stream_id_timestamp" on "user_events" ("stream_id", "timestamp");
+
+create table "user_snaps" (
+  "id" uuid not null default gen_random_uuid () primary key,
+  "stream_id" uuid not null references "user_streams" on delete cascade,
+  "timestamp" timestamptz not null default clock_timestamp(),
+  "data" jsonb null
+);
+
+drop index if exists "idx_user_snaps_stream_id";
+
+create index "idx_user_snaps_stream_id" on "user_snaps" ("stream_id");
+
+drop index if exists "idx_user_snaps_stream_id_timestamp";
+
+create index "idx_user_snaps_stream_id_timestamp" on "user_snaps" ("stream_id", "timestamp");

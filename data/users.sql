@@ -14,11 +14,23 @@ from (
     stream_id,
     min(timestamp) as added,
     max(timestamp) as updated,
-    (array_agg(data order by timestamp desc))[1] as last,
+    (array_agg(data order by timestamp desc))[1] is null as dropped,
     jsonb_merge_agg (data order by timestamp) as data
   from "user_events"
   group by stream_id
-) where last is not null;
+) where dropped = false;
+
+create or replace function snap_users (snap_time timestamptz) returns setof user_snaps language sql as $$
+  insert into "user_snaps" (stream_id, timestamp, data)
+  select
+    stream_id,
+    snap_time,
+    jsonb_merge_agg (data order by timestamp)
+  from "user_events"
+  where timestamp < snap_time
+  group by stream_id
+  returning *;
+$$;
 
 drop type if exists init_users_input cascade;
 
