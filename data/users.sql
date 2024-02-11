@@ -17,18 +17,16 @@ from
       min(timestamp) as added,
       max(timestamp) as updated,
       jsonb_merge_agg (data) as data
-    from
-      "user_events"
-    group by
-      stream_id
+    from "user_events"
+    group by stream_id
   ) e on e.stream_id = s.id;
 
-drop type if exists init_user_input cascade;
+drop type if exists init_users_input cascade;
 
-create type init_user_input as (username text, password text, stream_id uuid);
+create type init_users_input as (username text, password text, stream_id uuid);
 
 create
-or replace function init_user (inputs init_user_input[]) returns setof user_events language sql as $$
+or replace function init_users (inputs init_users_input[]) returns setof user_events language sql as $$
   with nest as (
     select *, gen_salt('bf') as salt from unnest(inputs)
   ), streams as (
@@ -42,29 +40,33 @@ or replace function init_user (inputs init_user_input[]) returns setof user_even
   from nest returning *;
 $$;
 
-drop type if exists set_username_input cascade;
+drop type if exists set_usernames_input cascade;
 
-create type set_username_input as (stream_id uuid, username text);
+create type set_usernames_input as (id uuid, username text);
 
 create
-or replace function set_username (inputs set_username_input[]) returns setof user_events language sql as $$
+or replace function set_usernames (inputs set_usernames_input[]) returns setof user_events language sql as $$
   with nest as (
     select * from unnest(inputs)
   )
   insert into "user_events" (stream_id, name, data)
-  select stream_id, 'username_set', jsonb_build_object('username', username) from nest returning *;
+  select id, 'username_set', jsonb_build_object('username', username) from nest returning *;
 $$;
 
-drop type if exists set_password_input cascade;
+drop type if exists set_passwords_input cascade;
 
-create type set_password_input as (stream_id uuid, password text);
+create type set_passwords_input as (id uuid, password text);
 
 create
-or replace function set_password (inputs set_password_input[]) returns setof user_events language sql as $$
+or replace function set_passwords (inputs set_passwords_input[]) returns setof user_events language sql as $$
   with nest as (
     select *, gen_salt('bf') as salt from unnest(inputs)
   )
   insert into "user_events" (stream_id, name, data)
-  select stream_id, 'password_set', jsonb_build_object('salt', salt, 'passhash', crypt(password, salt))
+  select id, 'password_set', jsonb_build_object('salt', salt, 'passhash', crypt(password, salt))
   from nest returning *;
+$$;
+
+create or replace function drop_users (inputs uuid[]) returns setof user_events language sql as $$
+  insert into "user_events" (stream_id, name) values(unnest(inputs), 'dropped') returning *;
 $$;
