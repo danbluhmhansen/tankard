@@ -1,6 +1,7 @@
-CREATE OR REPLACE FUNCTION check_password(id uuid, password text) RETURNS boolean LANGUAGE sql AS $$
-  WITH hash AS (
-    SELECT salt, passhash FROM users WHERE id = id LIMIT 1
+create
+or replace function check_password (id uuid, password text) returns boolean language sql as $$
+  with hash as (
+    select salt, passhash from users where id = id limit 1
   )
-  SELECT crypt(password, salt) = passhash FROM hash LIMIT 1;
+  select crypt(password, salt) = passhash from hash limit 1;
 $$;

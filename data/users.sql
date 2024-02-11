@@ -1,63 +1,70 @@
-DROP MATERIALIZED VIEW IF EXISTS "users";
-CREATE MATERIALIZED VIEW "users" AS
-  SELECT
-    s.id,
-    e.added,
-    e.updated,
-    e.data ->> 'username' AS username,
-    e.data ->> 'salt' AS salt,
-    e.data ->> 'passhash' AS passhash,
-    e.data ->> 'email' AS email
-  FROM
-    "user_streams" s
-    JOIN (
-      SELECT
-        stream_id,
-        min(timestamp) AS added,
-        max(timestamp) AS updated,
-        jsonb_merge_agg(data) AS data
-      FROM
-        "user_events"
-      GROUP BY
-        stream_id
-    ) e ON e.stream_id = s.id;
+drop materialized view if exists "users";
 
-DROP TYPE IF EXISTS init_user_input CASCADE;
-CREATE TYPE init_user_input AS (username text, password text, stream_id uuid);
+create materialized view "users" as
+select
+  s.id,
+  e.added,
+  e.updated,
+  e.data ->> 'username' as username,
+  e.data ->> 'salt' as salt,
+  e.data ->> 'passhash' as passhash,
+  e.data ->> 'email' as email
+from
+  "user_streams" s
+  join (
+    select
+      stream_id,
+      min(timestamp) as added,
+      max(timestamp) as updated,
+      jsonb_merge_agg (data) as data
+    from
+      "user_events"
+    group by
+      stream_id
+  ) e on e.stream_id = s.id;
 
-CREATE OR REPLACE FUNCTION init_user(inputs init_user_input[]) RETURNS SETOF user_events LANGUAGE sql AS $$
-  WITH nest AS (
-    SELECT *, gen_salt('bf') AS salt FROM unnest(inputs)
-  ), streams AS (
-    INSERT INTO "user_streams" SELECT stream_id FROM nest RETURNING *
+drop type if exists init_user_input cascade;
+
+create type init_user_input as (username text, password text, stream_id uuid);
+
+create
+or replace function init_user (inputs init_user_input[]) returns setof user_events language sql as $$
+  with nest as (
+    select *, gen_salt('bf') as salt from unnest(inputs)
+  ), streams as (
+    insert into "user_streams" select stream_id from nest returning *
   )
-  INSERT INTO "user_events" (stream_id, name, data)
-  SELECT
+  insert into "user_events" (stream_id, name, data)
+  select
     stream_id,
     'initialized',
     jsonb_build_object('username', username, 'salt', salt, 'passhash', crypt(password, salt))
-  FROM nest RETURNING *;
+  from nest returning *;
 $$;
 
-DROP TYPE IF EXISTS set_username_input CASCADE;
-CREATE TYPE set_username_input AS (stream_id uuid, username text);
+drop type if exists set_username_input cascade;
 
-CREATE OR REPLACE FUNCTION set_username(inputs set_username_input[]) RETURNS SETOF user_events LANGUAGE sql AS $$
-  WITH nest AS (
-    SELECT * FROM unnest(inputs)
+create type set_username_input as (stream_id uuid, username text);
+
+create
+or replace function set_username (inputs set_username_input[]) returns setof user_events language sql as $$
+  with nest as (
+    select * from unnest(inputs)
   )
-  INSERT INTO "user_events" (stream_id, name, data)
-  SELECT stream_id, 'username_set', jsonb_build_object('username', username) FROM nest RETURNING *;
+  insert into "user_events" (stream_id, name, data)
+  select stream_id, 'username_set', jsonb_build_object('username', username) from nest returning *;
 $$;
 
-DROP TYPE IF EXISTS set_password_input CASCADE;
-CREATE TYPE set_password_input AS (stream_id uuid, password text);
+drop type if exists set_password_input cascade;
 
-CREATE OR REPLACE FUNCTION set_password(inputs set_password_input[]) RETURNS SETOF user_events LANGUAGE sql AS $$
-  WITH nest AS (
-    SELECT *, gen_salt('bf') AS salt FROM unnest(inputs)
+create type set_password_input as (stream_id uuid, password text);
+
+create
+or replace function set_password (inputs set_password_input[]) returns setof user_events language sql as $$
+  with nest as (
+    select *, gen_salt('bf') as salt from unnest(inputs)
   )
-  INSERT INTO "user_events" (stream_id, name, data)
-  SELECT stream_id, 'password_set', jsonb_build_object('salt', salt, 'passhash', crypt(password, salt))
-  FROM nest RETURNING *;
+  insert into "user_events" (stream_id, name, data)
+  select stream_id, 'password_set', jsonb_build_object('salt', salt, 'passhash', crypt(password, salt))
+  from nest returning *;
 $$;

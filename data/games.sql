@@ -1,37 +1,44 @@
-DROP MATERIALIZED VIEW IF EXISTS "games";
-CREATE MATERIALIZED VIEW "games" AS
-  SELECT
-    s.id,
-    s.user_id,
-    e.added,
-    e.updated,
-    e.data ->> 'name' AS name,
-    e.data ->> 'description' AS description
-  FROM
-    "game_streams" s
-    JOIN (
-      SELECT
-        stream_id,
-        min(timestamp) AS added,
-        max(timestamp) AS updated,
-        jsonb_merge_agg(data) AS data
-      FROM
-        "game_events"
-      GROUP BY
-        stream_id
-    ) e ON e.stream_id = s.id;
+drop materialized view if exists "games";
 
-DROP TYPE IF EXISTS init_game_input CASCADE;
-CREATE TYPE init_game_input AS (user_id uuid, name text, description text, stream_id uuid);
+create materialized view "games" as
+select
+  s.id,
+  s.user_id,
+  e.added,
+  e.updated,
+  e.data ->> 'name' as name,
+  e.data ->> 'description' as description
+from
+  "game_streams" s
+  join (
+    select
+      stream_id,
+      min(timestamp) as added,
+      max(timestamp) as updated,
+      jsonb_merge_agg (data) as data
+    from
+      "game_events"
+    group by
+      stream_id
+  ) e on e.stream_id = s.id;
 
-CREATE OR REPLACE FUNCTION init_game(inputs init_game_input[]) RETURNS SETOF game_events LANGUAGE sql AS $$
-  WITH nest AS (
-    SELECT * FROM unnest(inputs)
-  ), streams AS (
-    INSERT INTO "game_streams" SELECT stream_id, user_id FROM nest RETURNING *
+drop type if exists init_game_input cascade;
+
+create type init_game_input as (
+  user_id uuid,
+  name text,
+  description text,
+  stream_id uuid
+);
+
+create
+or replace function init_game (inputs init_game_input[]) returns setof game_events language sql as $$
+  with nest as (
+    select * from unnest(inputs)
+  ), streams as (
+    insert into "game_streams" select stream_id, user_id from nest returning *
   )
-  INSERT INTO "game_events" (stream_id, name, data)
-  SELECT stream_id, 'initialized', jsonb_build_object('name', name, 'description', description)
-  FROM nest RETURNING *;
+  insert into "game_events" (stream_id, name, data)
+  select stream_id, 'initialized', jsonb_build_object('name', name, 'description', description)
+  from nest returning *;
 $$;
-

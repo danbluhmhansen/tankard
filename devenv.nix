@@ -9,10 +9,10 @@
   # https://devenv.sh/packages/
   packages = [
     pkgs.git
-    pkgs.atlas
     pkgs.cargo-watch
     pkgs.bun
     pkgs.nodePackages.typescript-language-server
+    pkgs.nodePackages.sql-formatter
     pkgs.rustywind
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
@@ -22,12 +22,11 @@
 
   # https://devenv.sh/scripts/
   scripts.watch-server.exec = "cargo watch --exec run";
-  scripts.watch-bundle.exec = "bun build alpine.ts htmx.ts --splitting --watch --outdir=dist";
+  scripts.watch-bundle.exec = "bun build modules/alpine.ts modules/htmx.ts --splitting --watch --outdir=dist";
   scripts.watch-unocss.exec = "bun unocss --watch";
 
-  scripts.db-diff.exec = "atlas schema diff --env local --from $DATABASE_URL --to file://schema.hcl | bat --language sql";
-  scripts.db-apply.exec = "atlas schema apply --env local";
   scripts.db-init.exec = ''
+    psql --dbname=tankard --file=./data/events.sql
     psql --dbname=tankard --file=./data/init.sql
     psql --dbname=tankard --file=./data/users.sql
     psql --dbname=tankard --file=./data/games.sql
@@ -66,7 +65,6 @@
     initialScript = ''
       CREATE USER postgres SUPERUSER PASSWORD 'password';
       CREATE DATABASE tankard;
-      CREATE DATABASE tankard_dev;
     '';
   };
 

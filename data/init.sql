@@ -1,44 +1,46 @@
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+create extension if not exists pgcrypto;
 
-CREATE OR REPLACE FUNCTION jsonb_deep_merge(jsonb, jsonb) RETURNS jsonb language SQL immutable AS $$
-  SELECT
-    CASE
+create
+or replace function jsonb_deep_merge (jsonb, jsonb) returns jsonb language sql immutable as $$
+  select
+    case
       jsonb_typeof($1)
-      WHEN 'object' THEN CASE
+      when 'object' then case
         jsonb_typeof($2)
-        WHEN 'object' THEN (
-          SELECT
+        when 'object' then (
+          select
             jsonb_object_agg(
               k,
-              CASE
-                WHEN e2.v IS NULL THEN e1.v
-                WHEN e1.v IS NULL THEN e2.v
-                ELSE jsonb_deep_merge(e1.v, e2.v)
-              END
+              case
+                when e2.v is null then e1.v
+                when e1.v is null then e2.v
+                else jsonb_deep_merge(e1.v, e2.v)
+              end
             )
-          FROM
-            jsonb_each($1) e1(k, v) FULL
-            JOIN jsonb_each($2) e2(k, v) USING (k)
+          from
+            jsonb_each($1) e1(k, v) full
+            join jsonb_each($2) e2(k, v) using (k)
         )
-        ELSE $2
-      END
-      WHEN 'array' THEN (
-        SELECT
+        else $2
+      end
+      when 'array' then (
+        select
           jsonb_agg(items.val)
-        FROM
+        from
           (
-            SELECT
-              jsonb_array_elements($1) AS val
-            UNION
-            SELECT
-              jsonb_array_elements($2) AS val
-          ) AS items
+            select
+              jsonb_array_elements($1) as val
+            union
+            select
+              jsonb_array_elements($2) as val
+          ) as items
       )
-      ELSE $2
-  END
+      else $2
+  end
 $$;
 
-CREATE OR REPLACE AGGREGATE jsonb_merge_agg(jsonb) (
+create
+or replace aggregate jsonb_merge_agg (jsonb) (
   sfunc = jsonb_deep_merge,
   stype = jsonb,
   initcond = '{}'
