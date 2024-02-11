@@ -15,10 +15,12 @@ from
       stream_id,
       min(timestamp) as added,
       max(timestamp) as updated,
-      jsonb_merge_agg (data) as data
+      (array_agg(data order by timestamp desc))[1] as last,
+      jsonb_merge_agg (data order by timestamp) as data
     from "game_events"
     group by stream_id
-  ) e on e.stream_id = s.id;
+  ) e on e.stream_id = s.id
+  where last is not null;
 
 drop type if exists init_games_input cascade;
 
@@ -73,5 +75,9 @@ returns setof game_events language sql as $$
 $$;
 
 create or replace function drop_games (inputs uuid[]) returns setof game_events language sql as $$
-  insert into "game_events" (stream_id, name) values(unnest(inputs), 'dropped') returning *;
+  insert into "game_events" (stream_id, name) values (unnest(inputs), 'dropped') returning *;
+$$;
+
+create or replace function restore_games (inputs uuid[]) returns setof game_events language sql as $$
+  insert into "game_events" (stream_id, name, data) values (unnest(inputs), 'restored', '{}') returning *;
 $$;

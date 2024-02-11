@@ -2,24 +2,23 @@ drop materialized view if exists "users";
 
 create materialized view "users" as
 select
-  s.id,
-  e.added,
-  e.updated,
-  e.data ->> 'username' as username,
-  e.data ->> 'salt' as salt,
-  e.data ->> 'passhash' as passhash,
-  e.data ->> 'email' as email
-from
-  "user_streams" s
-  join (
-    select
-      stream_id,
-      min(timestamp) as added,
-      max(timestamp) as updated,
-      jsonb_merge_agg (data) as data
-    from "user_events"
-    group by stream_id
-  ) e on e.stream_id = s.id;
+  stream_id as id,
+  added,
+  updated,
+  data ->> 'username' as username,
+  data ->> 'salt' as salt,
+  data ->> 'passhash' as passhash,
+  data ->> 'email' as email
+from (
+  select
+    stream_id,
+    min(timestamp) as added,
+    max(timestamp) as updated,
+    (array_agg(data order by timestamp desc))[1] as last,
+    jsonb_merge_agg (data order by timestamp) as data
+  from "user_events"
+  group by stream_id
+) where last is not null;
 
 drop type if exists init_users_input cascade;
 
@@ -68,5 +67,9 @@ or replace function set_passwords (inputs set_passwords_input[]) returns setof u
 $$;
 
 create or replace function drop_users (inputs uuid[]) returns setof user_events language sql as $$
-  insert into "user_events" (stream_id, name) values(unnest(inputs), 'dropped') returning *;
+  insert into "user_events" (stream_id, name) values (unnest(inputs), 'dropped') returning *;
+$$;
+
+create or replace function restore_users (inputs uuid[]) returns setof user_events language sql as $$
+  insert into "user_events" (stream_id, name, data) values (unnest(inputs), 'restored', '{}') returning *;
 $$;

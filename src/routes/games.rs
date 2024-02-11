@@ -81,7 +81,7 @@ pub(crate) async fn post(
 ) -> Response {
     if let Some(CurrentUser { id }) = user {
         let _ = sqlx::query!(
-            "SELECT id FROM init_game(ARRAY[ROW($1, $2, $3, gen_random_uuid())]::init_game_input[]);",
+            "SELECT id FROM init_games(ARRAY[ROW($1, $2, $3, gen_random_uuid())]::init_games_input[]);",
             id,
             name,
             description

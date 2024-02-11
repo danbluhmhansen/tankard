@@ -21,7 +21,7 @@ or replace function jsonb_deep_merge (jsonb, jsonb) returns jsonb language sql i
             jsonb_each($1) e1(k, v) full
             join jsonb_each($2) e2(k, v) using (k)
         )
-        else $2
+        else coalesce($2, $1)
       end
       when 'array' then (
         select

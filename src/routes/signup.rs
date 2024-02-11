@@ -61,7 +61,7 @@ pub(crate) async fn post(
     Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
     let _ = sqlx::query!(
-        "SELECT id FROM init_user(ARRAY[ROW($1, $2, gen_random_uuid())]::init_user_input[]);",
+        "SELECT id FROM init_users(ARRAY[ROW($1, $2, gen_random_uuid())]::init_users_input[]);",
         username,
         password
     )
