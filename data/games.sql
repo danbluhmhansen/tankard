@@ -1,26 +1,52 @@
 drop materialized view if exists "games";
 
 create materialized view "games" as
-select
-  s.id,
-  s.user_id,
-  e.added,
-  e.updated,
-  e.data ->> 'name' as name,
-  e.data ->> 'description' as description
-from
-  "game_streams" s
-  join (
-    select
-      stream_id,
-      min(timestamp) as added,
-      max(timestamp) as updated,
-      (array_agg(data order by timestamp desc))[1] as last,
-      jsonb_merge_agg (data order by timestamp) as data
-    from "game_events"
+with snaps as (
+  select id, stream_id, timestamp, data from "game_snaps"
+), events as (
+  select * from snaps union (
+    select e.id, e.stream_id, e.timestamp, e.data
+    from "game_events" e
+    where not exists (select 1 from snaps s where s.stream_id = e.stream_id and s.timestamp > e.timestamp)
+  )
+  order by stream_id, timestamp
+), aggs as (
+  select
+    stream_id,
+    min(timestamp) as added,
+    max(timestamp) as updated,
+    (array_agg(data order by timestamp desc))[1] is null as dropped,
+    jsonb_merge_agg (data order by timestamp) as data
+    from events
     group by stream_id
-  ) e on e.stream_id = s.id
-  where last is not null;
+)
+select
+  stream_id as id,
+  user_id,
+  added,
+  updated,
+  data ->> 'name' as name,
+  data ->> 'description' as description
+from aggs
+join "game_streams" s on s.id = stream_id
+where dropped = false;
+
+create or replace function snap_games (snap_time timestamptz) returns setof game_snaps language sql as $$
+  insert into "game_snaps" (stream_id, timestamp, data)
+  select stream_id, snap_time, jsonb_merge_agg (data order by timestamp)
+  from "game_events"
+  where timestamp < snap_time
+  group by stream_id
+  returning *;
+$$;
+
+create or replace function snap_game (id uuid, snap_time timestamptz) returns game_snaps language sql as $$
+  insert into "game_snaps" (stream_id, timestamp, data)
+  select snap_game.id, snap_time, jsonb_merge_agg (data order by timestamp)
+  from "game_events"
+  where stream_id = snap_game.id and timestamp < snap_time
+  returning *;
+$$;
 
 drop type if exists init_games_input cascade;
 
