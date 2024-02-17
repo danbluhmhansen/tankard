@@ -3,6 +3,7 @@
   env.DATABASE_URL = "postgres://postgres:password@localhost:5432/tankard?sslmode=disable";
   env.DATABASE_DEV_URL = "postgres://postgres:password@localhost:5432/tankard_dev?sslmode=disable";
   env.PASERK = "k4.local.MBRMvUocz642L1jhYCP7ORQ1QXHc6ryMXcASX780D-Q";
+  env.REDIS_URL = "redis://127.0.0.1/";
 
   # https://devenv.sh/packages/
   packages = [
@@ -73,6 +74,8 @@
       create user postgres superuser password 'password';
     '';
   };
+
+  services.redis.enable = true;
 
   # https://devenv.sh/integrations/codespaces-devcontainer/
   devcontainer.enable = true;

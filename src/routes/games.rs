@@ -1,3 +1,4 @@
+use apalis::{prelude::Storage, redis::RedisStorage};
 use axum::{
     extract::State,
     response::{IntoResponse, Redirect, Response},
@@ -9,7 +10,7 @@ use maud::{html, Markup};
 use serde::Deserialize;
 use sqlx::{types::Uuid, Pool, Postgres};
 
-use crate::{components::boost, AppState, CurrentUser};
+use crate::{components::boost, AppState, CurrentUser, DbJob};
 
 use super::index;
 
@@ -76,6 +77,7 @@ pub(crate) async fn post(
     _: Path,
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
+    Extension(mut store): Extension<RedisStorage<DbJob>>,
     State(state): State<Pool<Postgres>>,
     Form(Payload { name, description }): Form<Payload>,
 ) -> Response {
@@ -88,9 +90,7 @@ pub(crate) async fn post(
         )
         .fetch_all(&state)
         .await;
-        let _ = sqlx::query!("REFRESH MATERIALIZED VIEW games;")
-            .fetch_all(&state)
-            .await;
+        let _ = store.push(DbJob::RefreshGameView).await;
 
         boost(page(id, &state).await, true, boosted).into_response()
     } else {
