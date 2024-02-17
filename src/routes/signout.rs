@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     response::{IntoResponse, Redirect, Response},
     Router,
@@ -11,7 +13,7 @@ use crate::AppState;
 
 use super::index;
 
-pub(crate) fn route() -> Router<AppState> {
+pub(crate) fn route() -> Router<Arc<AppState>> {
     Router::new().typed_post(post)
 }
 

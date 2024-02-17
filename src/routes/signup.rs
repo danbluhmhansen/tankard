@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
@@ -7,11 +9,10 @@ use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
 use maud::{html, Markup};
 use serde::Deserialize;
-use sqlx::{Pool, Postgres};
 
 use crate::{components::boost, AppState, CurrentUser};
 
-pub(crate) fn route() -> Router<AppState> {
+pub(crate) fn route() -> Router<Arc<AppState>> {
     Router::new().typed_get(get).typed_post(post)
 }
 
@@ -57,7 +58,7 @@ pub(crate) async fn post(
     _: Path,
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
-    State(state): State<Pool<Postgres>>,
+    State(state): State<Arc<AppState>>,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
     let _ = sqlx::query!(
@@ -65,10 +66,10 @@ pub(crate) async fn post(
         username,
         password
     )
-    .fetch_all(&state)
+    .fetch_all(&state.pool)
     .await;
     let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
-        .fetch_all(&state)
+        .fetch_all(&state.pool)
         .await;
 
     boost(page(), user.is_some(), boosted).into_response()

@@ -1,4 +1,4 @@
-use std::{error::Error, time::Duration};
+use std::{error::Error, sync::Arc, time::Duration};
 
 use axum::{
     extract::State,
@@ -64,7 +64,7 @@ async fn sign_in<'a>(
     }
 }
 
-pub(crate) fn route() -> Router<AppState> {
+pub(crate) fn route() -> Router<Arc<AppState>> {
     Router::new().typed_get(get).typed_post(post)
 }
 
@@ -110,11 +110,11 @@ pub(crate) async fn post(
     _: Path,
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
-    State(state): State<Pool<Postgres>>,
+    State(state): State<Arc<AppState>>,
     jar: CookieJar,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
-    if let Ok(Some(cookie)) = sign_in(&state, username, password).await {
+    if let Ok(Some(cookie)) = sign_in(&state.pool, username, password).await {
         (jar.add(cookie), Redirect::to(profile::Path.to_uri().path())).into_response()
     } else {
         boost(page(), user.is_some(), boosted).into_response()

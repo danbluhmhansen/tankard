@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{Extension, Router};
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
@@ -5,7 +7,7 @@ use maud::{html, Markup};
 
 use crate::{components::boost, AppState, CurrentUser};
 
-pub(crate) fn route() -> Router<AppState> {
+pub(crate) fn route() -> Router<Arc<AppState>> {
     Router::new().typed_get(get)
 }
 

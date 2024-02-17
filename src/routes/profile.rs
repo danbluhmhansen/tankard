@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     extract::State,
     response::{IntoResponse, Redirect, Response},
@@ -6,13 +8,12 @@ use axum::{
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
 use maud::{html, Markup};
-use sqlx::{Pool, Postgres};
 
 use crate::{components::boost, AppState, CurrentUser};
 
 use super::index;
 
-pub(crate) fn route() -> Router<AppState> {
+pub(crate) fn route() -> Router<Arc<AppState>> {
     Router::new().typed_get(get)
 }
 
@@ -30,11 +31,11 @@ pub(crate) async fn get(
     _: Path,
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
-    State(state): State<Pool<Postgres>>,
+    State(state): State<Arc<AppState>>,
 ) -> Response {
     if let Some(user) = user {
         let user = sqlx::query!("SELECT username FROM users WHERE id = $1 LIMIT 1;", user.id)
-            .fetch_one(&state)
+            .fetch_one(&state.pool)
             .await
             .unwrap();
         boost(page(user.username.unwrap()), true, boosted).into_response()
