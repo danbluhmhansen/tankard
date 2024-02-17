@@ -1,6 +1,4 @@
-{ pkgs, lib, ... }:
-
-{
+{ pkgs, lib, ... }: {
   # https://devenv.sh/basics/
   env.DATABASE_URL = "postgres://postgres:password@localhost:5432/tankard?sslmode=disable";
   env.DATABASE_DEV_URL = "postgres://postgres:password@localhost:5432/tankard_dev?sslmode=disable";
@@ -26,11 +24,17 @@
   scripts.watch-unocss.exec = "bun unocss --watch";
 
   scripts.db-init.exec = ''
-    psql --dbname=tankard --file=./data/events.sql
     psql --dbname=tankard --file=./data/init.sql
-    psql --dbname=tankard --file=./data/users.sql
-    psql --dbname=tankard --file=./data/games.sql
+    psql --dbname=tankard --file=./data/users/events.sql
+    psql --dbname=tankard --file=./data/users/snaps.sql
+    psql --dbname=tankard --file=./data/users/views.sql
+    psql --dbname=tankard --file=./data/users/commands.sql
+    psql --dbname=tankard --file=./data/users/triggers.sql
     psql --dbname=tankard --file=./data/auth.sql
+    psql --dbname=tankard --file=./data/games/events.sql
+    psql --dbname=tankard --file=./data/games/snaps.sql
+    psql --dbname=tankard --file=./data/games/views.sql
+    psql --dbname=tankard --file=./data/games/commands.sql
   '';
 
   enterShell = "bun install";
@@ -62,9 +66,11 @@
     enable = true;
     package = pkgs.postgresql_16;
     listen_addresses = "127.0.0.1";
+    initialDatabases = [
+      {name = "tankard";}
+    ];
     initialScript = ''
-      CREATE USER postgres SUPERUSER PASSWORD 'password';
-      CREATE DATABASE tankard;
+      create user postgres superuser password 'password';
     '';
   };
 
