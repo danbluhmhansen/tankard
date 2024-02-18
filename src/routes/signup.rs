@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
     response::{IntoResponse, Response},
     Extension, Form, Router,
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
+use lapin::{options::BasicPublishOptions, BasicProperties, Channel};
 use maud::{html, Markup};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{components::boost, AppState, CurrentUser};
 
@@ -54,23 +54,35 @@ pub(crate) struct Payload {
     password: String,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct InitUser {
+    pub(crate) username: String,
+    pub(crate) password: String,
+}
+
+impl InitUser {
+    pub(crate) fn new(username: String, password: String) -> Self {
+        Self { username, password }
+    }
+}
+
 pub(crate) async fn post(
     _: Path,
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
-    State(state): State<Arc<AppState>>,
+    Extension(channel): Extension<Channel>,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
-    let _ = sqlx::query!(
-        "SELECT id FROM init_users(ARRAY[ROW($1, $2, gen_random_uuid())]::init_users_input[]);",
-        username,
-        password
-    )
-    .fetch_all(&state.pool)
-    .await;
-    let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
-        .fetch_all(&state.pool)
-        .await;
-
+    if let Ok(init_user) = serde_json::to_vec(&InitUser::new(username, password)) {
+        let _ = channel
+            .basic_publish(
+                "",
+                "db",
+                BasicPublishOptions::default(),
+                &init_user,
+                BasicProperties::default(),
+            )
+            .await;
+    }
     boost(page(), user.is_some(), boosted).into_response()
 }

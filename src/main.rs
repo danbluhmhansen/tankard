@@ -20,12 +20,14 @@ use pasetors::{
     claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
     Local,
 };
-use sqlx::{postgres::PgPoolOptions, types::Uuid, Pool, Postgres};
+use routes::{games::InitGame, signup::InitUser};
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::{join, net::TcpListener};
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
 use tower_livereload::LiveReloadLayer;
+use uuid::Uuid;
 
 mod components;
 mod routes;
@@ -146,8 +148,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .unwrap();
         while let Some(delivery) = consumer.next().await {
             if let Ok(delivery) = delivery {
-                let message = std::str::from_utf8(&delivery.data);
-                if let Ok("rfsh-games") = message {
+                if let Ok("rfsh-users") = std::str::from_utf8(&delivery.data) {
+                    let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
+                        .fetch_all(&state.pool)
+                        .await;
+                    let _ = channel
+                        .basic_publish(
+                            "sse",
+                            "sse",
+                            BasicPublishOptions::default(),
+                            "rfsh-users".as_bytes(),
+                            BasicProperties::default(),
+                        )
+                        .await;
+                } else if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
                     let _ = sqlx::query!("REFRESH MATERIALIZED VIEW games;")
                         .fetch_all(&state.pool)
                         .await;
@@ -155,6 +169,48 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .basic_publish(
                             "sse",
                             "sse",
+                            BasicPublishOptions::default(),
+                            "rfsh-games".as_bytes(),
+                            BasicProperties::default(),
+                        )
+                        .await;
+                } else if let Ok(InitUser { username, password }) =
+                    serde_json::from_slice(&delivery.data)
+                {
+                    let _ = sqlx::query!(
+                        "SELECT id FROM init_users(ARRAY[ROW($1, $2, gen_random_uuid())]::init_users_input[]);",
+                        username,
+                        password
+                    )
+                    .fetch_all(&state.pool)
+                    .await;
+                    let _ = channel
+                        .basic_publish(
+                            "",
+                            "db",
+                            BasicPublishOptions::default(),
+                            "rfsh-users".as_bytes(),
+                            BasicProperties::default(),
+                        )
+                        .await;
+                } else if let Ok(InitGame {
+                    id,
+                    name,
+                    description,
+                }) = serde_json::from_slice(&delivery.data)
+                {
+                    let _ = sqlx::query!(
+                        "SELECT id FROM init_games(ARRAY[ROW($1, $2, $3, gen_random_uuid())]::init_games_input[]);",
+                        id,
+                        name,
+                        description
+                    )
+                    .fetch_all(&state.pool)
+                    .await;
+                    let _ = channel
+                        .basic_publish(
+                            "",
+                            "db",
                             BasicPublishOptions::default(),
                             "rfsh-games".as_bytes(),
                             BasicProperties::default(),

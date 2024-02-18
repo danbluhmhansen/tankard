@@ -7,6 +7,7 @@ use axum::{
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
+use futures_util::TryFutureExt;
 use maud::{html, Markup};
 
 use crate::{components::boost, AppState, CurrentUser};
@@ -34,11 +35,16 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     if let Some(user) = user {
-        let user = sqlx::query!("SELECT username FROM users WHERE id = $1 LIMIT 1;", user.id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-        boost(page(user.username.unwrap()), true, boosted).into_response()
+        if let Ok(Some(username)) =
+            sqlx::query!("SELECT username FROM users WHERE id = $1 LIMIT 1;", user.id)
+                .fetch_one(&state.pool)
+                .map_ok(|user| user.username)
+                .await
+        {
+            boost(page(username), true, boosted).into_response()
+        } else {
+            todo!()
+        }
     } else {
         Redirect::to(index::Path.to_uri().path()).into_response()
     }

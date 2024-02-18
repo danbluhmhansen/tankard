@@ -17,8 +17,9 @@ use lapin::{
     BasicProperties, Channel,
 };
 use maud::{html, Markup};
-use serde::Deserialize;
-use sqlx::{types::Uuid, Pool, Postgres};
+use serde::{Deserialize, Serialize};
+use sqlx::{Pool, Postgres};
+use uuid::Uuid;
 
 use crate::{components::boost, AppState, CurrentUser};
 
@@ -126,6 +127,23 @@ pub(crate) struct Payload {
     description: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct InitGame {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) description: Option<String>,
+}
+
+impl InitGame {
+    pub(crate) fn new(id: Uuid, name: String, description: Option<String>) -> Self {
+        Self {
+            id,
+            name,
+            description,
+        }
+    }
+}
+
 pub(crate) async fn post(
     _: Path,
     HxRequest(is_hx): HxRequest,
@@ -136,23 +154,17 @@ pub(crate) async fn post(
     Form(Payload { name, description }): Form<Payload>,
 ) -> Response {
     if let Some(CurrentUser { id }) = user {
-        let _ = sqlx::query!(
-            "SELECT id FROM init_games(ARRAY[ROW($1, $2, $3, gen_random_uuid())]::init_games_input[]);",
-            id,
-            name,
-            description
-        )
-        .fetch_all(&state.pool)
-        .await;
-        let _ = channel
-            .basic_publish(
-                "",
-                "db",
-                BasicPublishOptions::default(),
-                "rfsh-games".as_bytes(),
-                BasicProperties::default(),
-            )
-            .await;
+        if let Ok(init_game) = serde_json::to_vec(&InitGame::new(id, name, description)) {
+            let _ = channel
+                .basic_publish(
+                    "",
+                    "db",
+                    BasicPublishOptions::default(),
+                    &init_game,
+                    BasicProperties::default(),
+                )
+                .await;
+        }
         boost(page(is_hx, id, state.pool.clone()).await, true, boosted).into_response()
     } else {
         Redirect::to(index::Path.to_uri().path()).into_response()
@@ -178,9 +190,17 @@ pub(crate) async fn sse(
         )
         .await
         .unwrap()
-        .then(move |j| {
-            table(user.as_ref().unwrap().id, state.pool.clone()).map(move |t| match j {
-                Ok(_) => Ok(Event::default().event("rfsh-games").data(t.into_string())),
+        .then(move |delivery| {
+            table(user.as_ref().unwrap().id, state.pool.clone()).map(move |table| match delivery {
+                Ok(delivery) => {
+                    if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
+                        Ok(Event::default()
+                            .event("rfsh-games")
+                            .data(table.into_string()))
+                    } else {
+                        Ok(Event::default())
+                    }
+                }
                 Err(err) => Err(err),
             })
         });
