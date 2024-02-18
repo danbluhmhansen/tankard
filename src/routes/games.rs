@@ -11,13 +11,16 @@ use axum::{
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::{HxBoosted, HxRequest};
 use futures_util::{FutureExt, Stream, StreamExt};
+use lapin::{
+    options::{BasicConsumeOptions, BasicPublishOptions},
+    types::FieldTable,
+    BasicProperties, Channel,
+};
 use maud::{html, Markup};
 use serde::Deserialize;
 use sqlx::{types::Uuid, Pool, Postgres};
-use tokio::sync::{broadcast, mpsc};
-use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
-use crate::{components::boost, AppState, CurrentUser, DbJob, SseJob};
+use crate::{components::boost, AppState, CurrentUser};
 
 use super::index;
 
@@ -128,7 +131,7 @@ pub(crate) async fn post(
     HxRequest(is_hx): HxRequest,
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
-    Extension(tx): Extension<mpsc::Sender<DbJob>>,
+    Extension(channel): Extension<Channel>,
     State(state): State<Arc<AppState>>,
     Form(Payload { name, description }): Form<Payload>,
 ) -> Response {
@@ -141,8 +144,15 @@ pub(crate) async fn post(
         )
         .fetch_all(&state.pool)
         .await;
-        let _ = tx.send(DbJob::RefreshGameView).await;
-
+        let _ = channel
+            .basic_publish(
+                "",
+                "db",
+                BasicPublishOptions::default(),
+                "rfsh-games".as_bytes(),
+                BasicProperties::default(),
+            )
+            .await;
         boost(page(is_hx, id, state.pool.clone()).await, true, boosted).into_response()
     } else {
         Redirect::to(index::Path.to_uri().path()).into_response()
@@ -156,15 +166,23 @@ pub(crate) struct SsePath;
 pub(crate) async fn sse(
     _: SsePath,
     Extension(user): Extension<Option<CurrentUser>>,
-    Extension(tx): Extension<broadcast::Sender<SseJob>>,
+    Extension(channel): Extension<Channel>,
     State(state): State<Arc<AppState>>,
-) -> Sse<impl Stream<Item = Result<Event, BroadcastStreamRecvError>>> {
-    let rx = tx.subscribe();
-    let stream = BroadcastStream::new(rx).then(move |j| {
-        table(user.as_ref().unwrap().id, state.pool.clone()).map(move |t| match j {
-            Ok(_) => Ok(Event::default().event("rfsh-games").data(t.into_string())),
-            Err(err) => Err(err),
-        })
-    });
+) -> Sse<impl Stream<Item = Result<Event, lapin::Error>>> {
+    let stream = channel
+        .basic_consume(
+            "sse",
+            "sse-consumer",
+            BasicConsumeOptions::default(),
+            FieldTable::default(),
+        )
+        .await
+        .unwrap()
+        .then(move |j| {
+            table(user.as_ref().unwrap().id, state.pool.clone()).map(move |t| match j {
+                Ok(_) => Ok(Event::default().event("rfsh-games").data(t.into_string())),
+                Err(err) => Err(err),
+            })
+        });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }

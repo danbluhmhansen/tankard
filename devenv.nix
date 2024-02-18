@@ -3,7 +3,7 @@
   env.DATABASE_URL = "postgres://postgres:password@localhost:5432/tankard?sslmode=disable";
   env.DATABASE_DEV_URL = "postgres://postgres:password@localhost:5432/tankard_dev?sslmode=disable";
   env.PASERK = "k4.local.MBRMvUocz642L1jhYCP7ORQ1QXHc6ryMXcASX780D-Q";
-  env.REDIS_URL = "redis://127.0.0.1/";
+  env.AMQP_URL = "amqp://localhost:5672";
 
   # https://devenv.sh/packages/
   packages = [
@@ -75,7 +75,7 @@
     '';
   };
 
-  services.redis.enable = true;
+  services.rabbitmq.enable = true;
 
   # https://devenv.sh/integrations/codespaces-devcontainer/
   devcontainer.enable = true;

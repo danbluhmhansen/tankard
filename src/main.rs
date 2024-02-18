@@ -7,17 +7,21 @@ use axum::{
     Extension, Router,
 };
 use axum_extra::extract::CookieJar;
+use futures_util::StreamExt;
+use lapin::{
+    options::{
+        BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, ExchangeDeclareOptions,
+        QueueDeclareOptions,
+    },
+    types::FieldTable,
+    BasicProperties, ExchangeKind,
+};
 use pasetors::{
     claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
     Local,
 };
-use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, types::Uuid, Pool, Postgres};
-use tokio::{
-    join,
-    net::TcpListener,
-    sync::{broadcast, mpsc},
-};
+use tokio::{join, net::TcpListener};
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
@@ -71,21 +75,6 @@ async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-enum DbJob {
-    InitGames {
-        id: String,
-        name: String,
-        description: Option<String>,
-    },
-    RefreshGameView,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-enum SseJob {
-    RefreshGameView,
-}
-
 #[cfg(debug_assertions)]
 fn not_htmx_predicate<T>(req: &Request<T>) -> bool {
     !req.headers().contains_key("hx-request")
@@ -93,17 +82,35 @@ fn not_htmx_predicate<T>(req: &Request<T>) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let conn_str = std::env::var("DATABASE_URL")?;
+    let db_url = std::env::var("DATABASE_URL")?;
     let state = Arc::new(AppState::new(
         PgPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(3))
-            .connect(&conn_str)
+            .connect(&db_url)
             .await?,
     ));
 
-    let (tx, mut rx) = mpsc::channel::<DbJob>(32);
-    let (sse_tx, _) = broadcast::channel::<SseJob>(32);
+    let amqp_url = std::env::var("AMQP_URL")?;
+    let amqp =
+        lapin::Connection::connect(&amqp_url, lapin::ConnectionProperties::default()).await?;
+
+    let channel = amqp.create_channel().await?;
+
+    channel
+        .queue_declare("db", QueueDeclareOptions::default(), FieldTable::default())
+        .await?;
+    channel
+        .queue_declare("sse", QueueDeclareOptions::default(), FieldTable::default())
+        .await?;
+    channel
+        .exchange_declare(
+            "sse",
+            ExchangeKind::Fanout,
+            ExchangeDeclareOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
 
     let app = Router::new()
         .merge(routes::games::route())
@@ -116,8 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(auth))
-                .layer(Extension(tx.clone()))
-                .layer(Extension(sse_tx.clone())),
+                .layer(Extension(channel)),
         )
         .with_state(state.clone());
 
@@ -128,19 +134,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let http = async { axum::serve(listener, app).await };
 
     let monitor = async move {
-        while let Some(job) = rx.recv().await {
-            match job {
-                DbJob::InitGames {
-                    id: _,
-                    name: _,
-                    description: _,
-                } => todo!(),
-                DbJob::RefreshGameView => {
+        let channel = amqp.create_channel().await.unwrap();
+        let mut consumer = channel
+            .basic_consume(
+                "db",
+                "db_consumer",
+                BasicConsumeOptions::default(),
+                FieldTable::default(),
+            )
+            .await
+            .unwrap();
+        while let Some(delivery) = consumer.next().await {
+            if let Ok(delivery) = delivery {
+                let message = std::str::from_utf8(&delivery.data);
+                if let Ok("rfsh-games") = message {
                     let _ = sqlx::query!("REFRESH MATERIALIZED VIEW games;")
                         .fetch_all(&state.pool)
                         .await;
-                    let _ = sse_tx.send(SseJob::RefreshGameView);
+                    let _ = channel
+                        .basic_publish(
+                            "sse",
+                            "sse",
+                            BasicPublishOptions::default(),
+                            "rfsh-games".as_bytes(),
+                            BasicProperties::default(),
+                        )
+                        .await;
                 }
+                let _ = delivery.ack(BasicAckOptions::default()).await;
             }
         }
     };
