@@ -51,16 +51,14 @@ struct CurrentUser {
 async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
     if let Some(id) = jar
         .get("session_id")
-        .map(|c| c.value())
-        .and_then(|token| {
-            local::decrypt(
-                &SymmetricKey::<V4>::try_from(std::env::var("PASERK").unwrap().as_str()).unwrap(),
-                &UntrustedToken::<Local, V4>::try_from(token).unwrap(),
-                &ClaimsValidationRules::new(),
-                None,
-                None,
-            )
-            .ok()
+        .and_then(|c| UntrustedToken::<Local, V4>::try_from(c.value()).ok())
+        .zip(
+            std::env::var("PASERK")
+                .ok()
+                .and_then(|k| SymmetricKey::<V4>::try_from(k.as_str()).ok()),
+        )
+        .and_then(|(token, key)| {
+            local::decrypt(&key, &token, &ClaimsValidationRules::new(), None, None).ok()
         })
         .and_then(|token| {
             token

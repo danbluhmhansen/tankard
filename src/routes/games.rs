@@ -12,7 +12,8 @@ use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::{HxBoosted, HxRequest};
 use futures_util::{FutureExt, Stream, StreamExt};
 use lapin::{
-    options::{BasicConsumeOptions, BasicPublishOptions},
+    message::DeliveryResult,
+    options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions},
     types::FieldTable,
     BasicProperties, Channel,
 };
@@ -181,7 +182,7 @@ pub(crate) async fn sse(
     Extension(channel): Extension<Channel>,
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, lapin::Error>>> {
-    let stream = channel
+    let consumer = channel
         .basic_consume(
             "sse",
             "sse-consumer",
@@ -189,20 +190,32 @@ pub(crate) async fn sse(
             FieldTable::default(),
         )
         .await
-        .unwrap()
-        .then(move |delivery| {
-            table(user.as_ref().unwrap().id, state.pool.clone()).map(move |table| match delivery {
-                Ok(delivery) => {
-                    if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
-                        Ok(Event::default()
-                            .event("rfsh-games")
-                            .data(table.into_string()))
-                    } else {
-                        Ok(Event::default())
-                    }
+        .unwrap();
+
+    consumer.set_delegate(|delivery: DeliveryResult| async move {
+        let _ = match delivery {
+            Ok(Some(delivery)) => delivery,
+            Ok(None) => return,
+            Err(_) => return,
+        }
+        .ack(BasicAckOptions::default())
+        .await;
+    });
+
+    let stream = consumer.then(move |delivery| {
+        table(user.as_ref().unwrap().id, state.pool.clone()).map(move |table| match delivery {
+            Ok(delivery) => {
+                if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
+                    Ok(Event::default()
+                        .event("rfsh-games")
+                        .data(table.into_string()))
+                } else {
+                    Ok(Event::default())
                 }
-                Err(err) => Err(err),
-            })
-        });
+            }
+            Err(err) => Err(err),
+        })
+    });
+
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
