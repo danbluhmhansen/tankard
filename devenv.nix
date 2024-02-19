@@ -36,6 +36,7 @@
     psql --dbname=tankard --file=./data/games/snaps.sql
     psql --dbname=tankard --file=./data/games/views.sql
     psql --dbname=tankard --file=./data/games/commands.sql
+    psql --dbname=tankard --file=./data/games/triggers.sql
   '';
 
   enterShell = "bun install";

@@ -30,3 +30,7 @@ select
 from aggs
 join "game_streams" s on s.id = stream_id
 where dropped = false;
+
+create unique index if not exists "idx_games_id" on "games" ("id");
+
+create index if not exists "idx_game_user_id" on "games" ("user_id");

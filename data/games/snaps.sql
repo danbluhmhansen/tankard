@@ -1,17 +1,11 @@
-create table "game_snaps" (
+create table if not exists "game_snaps" (
   "id" uuid not null default gen_random_uuid () primary key,
   "stream_id" uuid not null references "game_streams" on delete cascade,
   "timestamp" timestamptz not null default clock_timestamp(),
   "data" jsonb null
 );
 
-drop index if exists "idx_game_snaps_stream_id";
-
-create index "idx_game_snaps_stream_id" on "game_snaps" ("stream_id");
-
-drop index if exists "idx_game_snaps_stream_id_timestamp";
-
-create index "idx_game_snaps_stream_id_timestamp" on "game_snaps" ("stream_id", "timestamp");
+create unique index if not exists "idx_game_snaps_stream_id_timestamp" on "game_snaps" ("stream_id", "timestamp");
 
 create or replace function snap_games (snap_time timestamptz) returns setof game_snaps language sql as $$
   insert into "game_snaps" (stream_id, timestamp, data)

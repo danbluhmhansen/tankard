@@ -30,3 +30,5 @@ select
   data ->> 'email' as email
 from aggs
 where dropped = false;
+
+create unique index if not exists "idx_users_id" on "users" ("id");
