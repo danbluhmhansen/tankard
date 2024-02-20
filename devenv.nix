@@ -21,7 +21,9 @@
 
   # https://devenv.sh/scripts/
   scripts.watch-server.exec = "cargo watch --exec run";
-  scripts.watch-bundle.exec = "bun build modules/alpine.ts modules/htmx.ts --splitting --watch --outdir=dist";
+  scripts.watch-bundle.exec = ''
+    bun build modules/alpine.ts modules/htmx.ts --minify --splitting --watch --outdir=dist --sourcemap=external
+  '';
   scripts.watch-unocss.exec = "bun unocss --watch";
 
   scripts.db-init.exec = ''

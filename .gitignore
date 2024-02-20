@@ -12,10 +12,8 @@ devenv.local.nix
 /target
 
 # tankard
-dist/chunk-*.js
-dist/alpine.js
-dist/htmx.js
-dist/site.css
+!dist/reset.css
+dist/*
 
 # bun
 node_modules/

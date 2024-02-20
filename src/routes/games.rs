@@ -12,8 +12,7 @@ use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::{HxBoosted, HxRequest};
 use futures_util::{FutureExt, Stream, StreamExt};
 use lapin::{
-    message::DeliveryResult,
-    options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions},
+    options::{BasicConsumeOptions, BasicPublishOptions},
     types::FieldTable,
     BasicProperties, Channel,
 };
@@ -186,21 +185,14 @@ pub(crate) async fn sse(
         .basic_consume(
             "sse",
             "sse-consumer",
-            BasicConsumeOptions::default(),
+            BasicConsumeOptions {
+                no_ack: true,
+                ..Default::default()
+            },
             FieldTable::default(),
         )
         .await
         .unwrap();
-
-    consumer.set_delegate(|delivery: DeliveryResult| async move {
-        let _ = match delivery {
-            Ok(Some(delivery)) => delivery,
-            Ok(None) => return,
-            Err(_) => return,
-        }
-        .ack(BasicAckOptions::default())
-        .await;
-    });
 
     let stream = consumer.then(move |delivery| {
         table(user.as_ref().unwrap().id, state.pool.clone()).map(move |table| match delivery {
