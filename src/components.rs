@@ -16,8 +16,7 @@ pub(crate) fn boost(content: Markup, signed_in: bool, boosted: bool) -> Markup {
 fn full(content: Markup, signed_in: bool) -> Markup {
     html! {
         (DOCTYPE)
-        // TODO: enable alpine-morph as swap
-        html hx-boost="true" class="dark:text-white dark:bg-slate-900" {
+        html hx-boost="true" hx-ext="alpine-morph" hx-swap="morph:innerHTML" class="dark:text-white dark:bg-slate-900" {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width,initial-scale=1";
