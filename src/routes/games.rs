@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
+    http::StatusCode,
     response::{
         sse::{Event, KeepAlive},
         IntoResponse, Redirect, Response, Sse,
@@ -10,7 +11,7 @@ use axum::{
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::{HxBoosted, HxRequest};
-use futures_util::{FutureExt, Stream, StreamExt};
+use futures_util::TryStreamExt;
 use lapin::{
     options::{BasicConsumeOptions, BasicPublishOptions},
     types::FieldTable,
@@ -33,9 +34,9 @@ pub(crate) fn route() -> Router<Arc<AppState>> {
         .typed_get(sse)
 }
 
-pub(crate) async fn table(user_id: Uuid, pool: Pool<Postgres>) -> Markup {
+pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     let games = sqlx::query!("SELECT name FROM games WHERE user_id = $1;", user_id)
-        .fetch_all(&pool)
+        .fetch_all(pool)
         .await;
     html! {
         @if let Ok(games) = games {
@@ -58,7 +59,7 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: Pool<Postgres>) -> Ma
                 "..."
             }
         } @else {
-            (table(user_id, pool).await)
+            (table(user_id, &pool).await)
         }
         form method="post" class="flex flex-col gap-2" {
             input
@@ -89,7 +90,7 @@ pub(crate) async fn partial(
 ) -> Response {
     if let Some(CurrentUser { id }) = user {
         if is_hx {
-            table(id, state.pool.clone()).await.into_response()
+            table(id, &state.pool).await.into_response()
         } else {
             Redirect::to(Path.to_uri().path()).into_response()
         }
@@ -175,34 +176,39 @@ pub(crate) async fn sse(
     Extension(user): Extension<Option<CurrentUser>>,
     Extension(channel): Extension<Channel>,
     State(state): State<Arc<AppState>>,
-) -> Sse<impl Stream<Item = Result<Event, lapin::Error>>> {
-    let consumer = channel
-        .basic_consume(
-            "sse",
-            "sse-consumer",
-            BasicConsumeOptions {
-                no_ack: true,
-                ..Default::default()
-            },
-            FieldTable::default(),
-        )
-        .await
-        .unwrap();
+) -> Response {
+    if let Some(CurrentUser { id }) = user {
+        if let Ok(consumer) = channel
+            .basic_consume(
+                "sse",
+                "sse-consumer",
+                BasicConsumeOptions {
+                    no_ack: true,
+                    ..Default::default()
+                },
+                FieldTable::default(),
+            )
+            .await
+        {
+            let table = table(id, &state.pool).await;
 
-    let stream = consumer.then(move |delivery| {
-        table(user.as_ref().unwrap().id, state.pool.clone()).map(move |table| match delivery {
-            Ok(delivery) => {
+            let stream = consumer.map_ok(move |delivery| {
                 if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
-                    Ok(Event::default()
+                    Event::default()
                         .event("rfsh-games")
-                        .data(table.into_string()))
+                        .data(table.clone().into_string())
                 } else {
-                    Ok(Event::default())
+                    Event::default()
                 }
-            }
-            Err(err) => Err(err),
-        })
-    });
+            });
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+            Sse::new(stream)
+                .keep_alive(KeepAlive::default())
+                .into_response()
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    } else {
+        StatusCode::UNAUTHORIZED.into_response()
+    }
 }
