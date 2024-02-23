@@ -52,29 +52,35 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     }
 }
 
-pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: Pool<Postgres>) -> Markup {
+pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     html! {
+        dialog #add class="inset-0 justify-center items-center w-full h-full target:flex bg-black/50 backdrop-blur-sm" {
+            #add-dialog class="flex z-10 flex-col gap-4 p-4 max-w-sm bg-white rounded border dark:text-white dark:bg-slate-900" {
+                form method="post" class="flex flex-col gap-2" {
+                    input
+                        type="text"
+                        name="name"
+                        placeholder="Name"
+                        required
+                        class="p-1 bg-transparent border border-black dark:border-white";
+                    input
+                        type="textarea"
+                        name="description"
+                        placeholder="Description"
+                        class="p-1 bg-transparent border border-black dark:border-white";
+                    button type="submit" { "Add" }
+                }
+            }
+            a href="#!" hx-boost="false" class="fixed inset-0" {}
+        }
         @if is_hx {
             #games hx-get=(PartialPath.to_uri().path()) hx-trigger="revealed" {
                 "..."
             }
         } @else {
-            (table(user_id, &pool).await)
+            (table(user_id, pool).await)
         }
-        form method="post" class="flex flex-col gap-2" {
-            input
-                type="text"
-                name="name"
-                placeholder="Name"
-                required
-                class="p-1 bg-transparent border border-black dark:border-white";
-            input
-                type="textarea"
-                name="description"
-                placeholder="Description"
-                class="p-1 bg-transparent border border-black dark:border-white";
-            button type="submit" { "Add" }
-        }
+        a href="#add" hx-boost="false" { "Add" }
     }
 }
 
@@ -111,7 +117,7 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     if let Some(CurrentUser { id }) = user {
-        boost(page(is_hx, id, state.pool.clone()).await, true, boosted).into_response()
+        boost(page(is_hx, id, &state.pool).await, true, boosted).into_response()
     } else {
         Redirect::to(index::Path.to_uri().path()).into_response()
     }
@@ -161,7 +167,7 @@ pub(crate) async fn post(
                 )
                 .await;
         }
-        boost(page(is_hx, id, state.pool.clone()).await, true, boosted).into_response()
+        boost(page(is_hx, id, &state.pool).await, true, boosted).into_response()
     } else {
         Redirect::to(index::Path.to_uri().path()).into_response()
     }
