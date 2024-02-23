@@ -42,7 +42,7 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
         @if let Ok(games) = games {
             table hx-ext="sse" sse-connect=(SsePath) sse-swap="rfsh-games" {
                 thead { tr { th { "Name" } } }
-                tbody {
+                tbody class="text-center" {
                     @for game in games { tr { td { @if let Some(name) = game.name { (name) } } } }
                 }
             }
@@ -73,14 +73,10 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
             }
             a href="#!" hx-boost="false" class="fixed inset-0" {}
         }
-        @if is_hx {
-            #games hx-get=(PartialPath) hx-trigger="revealed" {
-                "..."
-            }
-        } @else {
-            (table(user_id, pool).await)
+        #games hx-get=(PartialPath) hx-trigger="revealed" class="flex justify-center" {
+            @if is_hx { "..." } @else { (table(user_id, pool).await) }
         }
-        a href="#add" hx-boost="false" { "Add" }
+        a href="#add" hx-boost="false" class="text-center" { "Add" }
     }
 }
 
