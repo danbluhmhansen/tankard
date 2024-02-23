@@ -40,14 +40,14 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
         .await;
     html! {
         @if let Ok(games) = games {
-            table hx-ext="sse" sse-connect=(SsePath.to_uri().path()) sse-swap="rfsh-games" {
+            table hx-ext="sse" sse-connect=(SsePath) sse-swap="rfsh-games" {
                 thead { tr { th { "Name" } } }
                 tbody {
                     @for game in games { tr { td { @if let Some(name) = game.name { (name) } } } }
                 }
             }
         } @else {
-            p hx-ext="sse" sse-connect=(SsePath.to_uri().path()) sse-swap="rfsh-games" { "No games..." }
+            p hx-ext="sse" sse-connect=(SsePath) sse-swap="rfsh-games" { "No games..." }
         }
     }
 }
@@ -55,7 +55,7 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
 pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     html! {
         dialog #add class="inset-0 justify-center items-center w-full h-full target:flex bg-black/50 backdrop-blur-sm" {
-            #add-dialog class="flex z-10 flex-col gap-4 p-4 max-w-sm bg-white rounded border dark:text-white dark:bg-slate-900" {
+            #dialog class="flex z-10 flex-col gap-4 p-4 max-w-sm bg-white rounded border dark:text-white dark:bg-slate-900" {
                 form method="post" class="flex flex-col gap-2" {
                     input
                         type="text"
@@ -74,7 +74,7 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
             a href="#!" hx-boost="false" class="fixed inset-0" {}
         }
         @if is_hx {
-            #games hx-get=(PartialPath.to_uri().path()) hx-trigger="revealed" {
+            #games hx-get=(PartialPath) hx-trigger="revealed" {
                 "..."
             }
         } @else {
