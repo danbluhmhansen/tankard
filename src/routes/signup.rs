@@ -1,10 +1,13 @@
+use amqprs::{
+    channel::{BasicPublishArguments, Channel},
+    BasicProperties,
+};
 use axum::{
     response::{IntoResponse, Response},
     Extension, Form, Router,
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
-use lapin::{options::BasicPublishOptions, BasicProperties, Channel};
 use maud::{html, Markup};
 use serde::{Deserialize, Serialize};
 
@@ -74,11 +77,9 @@ pub(crate) async fn post(
     if let Ok(init_user) = serde_json::to_vec(&InitUser::new(username, password)) {
         let _ = channel
             .basic_publish(
-                "",
-                "db",
-                BasicPublishOptions::default(),
-                &init_user,
                 BasicProperties::default(),
+                init_user,
+                BasicPublishArguments::new("", "db"),
             )
             .await;
     }

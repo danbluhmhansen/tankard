@@ -1,3 +1,7 @@
+use amqprs::{
+    channel::{BasicConsumeArguments, BasicPublishArguments, Channel},
+    BasicProperties,
+};
 use axum::{
     http::StatusCode,
     middleware,
@@ -9,15 +13,10 @@ use axum::{
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::{HxBoosted, HxRequest};
-use futures_util::TryStreamExt;
-use lapin::{
-    options::{BasicConsumeOptions, BasicPublishOptions},
-    types::FieldTable,
-    BasicProperties, Channel,
-};
 use maud::{html, Markup};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres};
+use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt};
 use uuid::Uuid;
 
 use crate::{
@@ -146,11 +145,9 @@ pub(crate) async fn post(
     if let Ok(init_game) = serde_json::to_vec(&InitGame::new(id, name, description)) {
         let _ = channel
             .basic_publish(
-                "",
-                "db",
-                BasicPublishOptions::default(),
-                &init_game,
                 BasicProperties::default(),
+                init_game,
+                BasicPublishArguments::new("", "db"),
             )
             .await;
     }
@@ -167,27 +164,27 @@ pub(crate) async fn sse(
     Extension(pool): Extension<Pool<Postgres>>,
     Extension(channel): Extension<Channel>,
 ) -> Response {
-    if let Ok(consumer) = channel
-        .basic_consume(
-            "sse",
-            "sse-consumer",
-            BasicConsumeOptions {
-                no_ack: true,
-                ..Default::default()
-            },
-            FieldTable::default(),
+    if let Ok((_, rx)) = channel
+        .basic_consume_rx(
+            BasicConsumeArguments::new("sse", "")
+                .auto_ack(true)
+                .finish(),
         )
         .await
     {
         let table = table(id, &pool).await;
 
-        let stream = consumer.map_ok(move |delivery| {
-            if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
-                Event::default()
+        let stream = UnboundedReceiverStream::new(rx).map(move |msg| {
+            if let Some("rfsh-games") = msg
+                .content
+                .as_ref()
+                .and_then(|content| std::str::from_utf8(content).ok())
+            {
+                Ok(Event::default()
                     .event("rfsh-games")
-                    .data(table.clone().into_string())
+                    .data(table.clone().into_string()))
             } else {
-                Event::default()
+                Err("cannot parse content")
             }
         });
 
