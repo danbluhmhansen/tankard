@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use axum::{
-    extract::State,
     http::StatusCode,
+    middleware,
     response::{
         sse::{Event, KeepAlive},
         IntoResponse, Redirect, Response, Sse,
@@ -22,16 +20,18 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 
-use crate::{components::boost, AppState, CurrentUser};
+use crate::{
+    auth::{self, CurrentUser},
+    components::boost,
+};
 
-use super::index;
-
-pub(crate) fn route() -> Router<Arc<AppState>> {
+pub(crate) fn route() -> Router {
     Router::new()
         .typed_get(partial)
         .typed_get(get)
         .typed_post(post)
         .typed_get(sse)
+        .layer(middleware::from_fn(auth::req_auth))
 }
 
 pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
@@ -87,17 +87,13 @@ pub(crate) struct PartialPath;
 pub(crate) async fn partial(
     _: PartialPath,
     HxRequest(is_hx): HxRequest,
-    Extension(user): Extension<Option<CurrentUser>>,
-    State(state): State<Arc<AppState>>,
+    Extension(CurrentUser { id }): Extension<CurrentUser>,
+    Extension(pool): Extension<Pool<Postgres>>,
 ) -> Response {
-    if let Some(CurrentUser { id }) = user {
-        if is_hx {
-            table(id, &state.pool).await.into_response()
-        } else {
-            Redirect::to(Path.to_uri().path()).into_response()
-        }
+    if is_hx {
+        table(id, &pool).await.into_response()
     } else {
-        Redirect::to(index::Path.to_uri().path()).into_response()
+        Redirect::to(Path.to_uri().path()).into_response()
     }
 }
 
@@ -109,14 +105,10 @@ pub(crate) async fn get(
     _: Path,
     HxRequest(is_hx): HxRequest,
     HxBoosted(boosted): HxBoosted,
-    Extension(user): Extension<Option<CurrentUser>>,
-    State(state): State<Arc<AppState>>,
+    Extension(CurrentUser { id }): Extension<CurrentUser>,
+    Extension(pool): Extension<Pool<Postgres>>,
 ) -> Response {
-    if let Some(CurrentUser { id }) = user {
-        boost(page(is_hx, id, &state.pool).await, true, boosted).into_response()
-    } else {
-        Redirect::to(index::Path.to_uri().path()).into_response()
-    }
+    boost(page(is_hx, id, &pool).await, true, boosted).into_response()
 }
 
 #[derive(Deserialize)]
@@ -146,27 +138,23 @@ pub(crate) async fn post(
     _: Path,
     HxRequest(is_hx): HxRequest,
     HxBoosted(boosted): HxBoosted,
-    Extension(user): Extension<Option<CurrentUser>>,
+    Extension(CurrentUser { id }): Extension<CurrentUser>,
+    Extension(pool): Extension<Pool<Postgres>>,
     Extension(channel): Extension<Channel>,
-    State(state): State<Arc<AppState>>,
     Form(Payload { name, description }): Form<Payload>,
 ) -> Response {
-    if let Some(CurrentUser { id }) = user {
-        if let Ok(init_game) = serde_json::to_vec(&InitGame::new(id, name, description)) {
-            let _ = channel
-                .basic_publish(
-                    "",
-                    "db",
-                    BasicPublishOptions::default(),
-                    &init_game,
-                    BasicProperties::default(),
-                )
-                .await;
-        }
-        boost(page(is_hx, id, &state.pool).await, true, boosted).into_response()
-    } else {
-        Redirect::to(index::Path.to_uri().path()).into_response()
+    if let Ok(init_game) = serde_json::to_vec(&InitGame::new(id, name, description)) {
+        let _ = channel
+            .basic_publish(
+                "",
+                "db",
+                BasicPublishOptions::default(),
+                &init_game,
+                BasicProperties::default(),
+            )
+            .await;
     }
+    boost(page(is_hx, id, &pool).await, true, boosted).into_response()
 }
 
 #[derive(TypedPath)]
@@ -175,42 +163,38 @@ pub(crate) struct SsePath;
 
 pub(crate) async fn sse(
     _: SsePath,
-    Extension(user): Extension<Option<CurrentUser>>,
+    Extension(CurrentUser { id }): Extension<CurrentUser>,
+    Extension(pool): Extension<Pool<Postgres>>,
     Extension(channel): Extension<Channel>,
-    State(state): State<Arc<AppState>>,
 ) -> Response {
-    if let Some(CurrentUser { id }) = user {
-        if let Ok(consumer) = channel
-            .basic_consume(
-                "sse",
-                "sse-consumer",
-                BasicConsumeOptions {
-                    no_ack: true,
-                    ..Default::default()
-                },
-                FieldTable::default(),
-            )
-            .await
-        {
-            let table = table(id, &state.pool).await;
+    if let Ok(consumer) = channel
+        .basic_consume(
+            "sse",
+            "sse-consumer",
+            BasicConsumeOptions {
+                no_ack: true,
+                ..Default::default()
+            },
+            FieldTable::default(),
+        )
+        .await
+    {
+        let table = table(id, &pool).await;
 
-            let stream = consumer.map_ok(move |delivery| {
-                if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
-                    Event::default()
-                        .event("rfsh-games")
-                        .data(table.clone().into_string())
-                } else {
-                    Event::default()
-                }
-            });
+        let stream = consumer.map_ok(move |delivery| {
+            if let Ok("rfsh-games") = std::str::from_utf8(&delivery.data) {
+                Event::default()
+                    .event("rfsh-games")
+                    .data(table.clone().into_string())
+            } else {
+                Event::default()
+            }
+        });
 
-            Sse::new(stream)
-                .keep_alive(KeepAlive::default())
-                .into_response()
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response()
     } else {
-        StatusCode::UNAUTHORIZED.into_response()
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     }
 }

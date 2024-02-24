@@ -1,12 +1,6 @@
-use std::{error::Error, future::IntoFuture, net::Ipv4Addr, sync::Arc, time::Duration};
+use std::{error::Error, future::IntoFuture, net::Ipv4Addr, time::Duration};
 
-use axum::{
-    extract::Request,
-    middleware::{self, Next},
-    response::Response,
-    Extension, Router,
-};
-use axum_extra::extract::CookieJar;
+use axum::{extract::Request, middleware, Extension, Router};
 use futures_util::StreamExt;
 use lapin::{
     options::{
@@ -16,10 +10,6 @@ use lapin::{
     types::FieldTable,
     BasicProperties, Channel, ExchangeKind,
 };
-use pasetors::{
-    claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
-    Local,
-};
 use routes::{games::InitGame, signup::InitUser};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::{join, net::TcpListener};
@@ -27,53 +17,10 @@ use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 #[cfg(debug_assertions)]
 use tower_livereload::LiveReloadLayer;
-use uuid::Uuid;
 
+mod auth;
 mod components;
 mod routes;
-
-#[derive(Clone, Debug)]
-pub struct AppState {
-    pool: Pool<Postgres>,
-}
-
-impl AppState {
-    fn new(pool: Pool<Postgres>) -> Self {
-        Self { pool }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct CurrentUser {
-    id: Uuid,
-}
-
-async fn auth(jar: CookieJar, mut req: Request, next: Next) -> Response {
-    if let Some(id) = jar
-        .get("session_id")
-        .and_then(|c| UntrustedToken::<Local, V4>::try_from(c.value()).ok())
-        .zip(
-            std::env::var("PASERK")
-                .ok()
-                .and_then(|k| SymmetricKey::<V4>::try_from(k.as_str()).ok()),
-        )
-        .and_then(|(token, key)| {
-            local::decrypt(&key, &token, &ClaimsValidationRules::new(), None, None).ok()
-        })
-        .and_then(|token| {
-            token
-                .payload_claims()
-                .and_then(|c| c.get_claim("sub"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok())
-        })
-    {
-        req.extensions_mut().insert(Some(CurrentUser { id }));
-    } else {
-        req.extensions_mut().insert(None::<CurrentUser>);
-    }
-    next.run(req).await
-}
 
 #[cfg(debug_assertions)]
 fn not_htmx_predicate<T>(req: &Request<T>) -> bool {
@@ -208,10 +155,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .fallback_service(ServeDir::new("dist"))
         .layer(
             ServiceBuilder::new()
-                .layer(middleware::from_fn(auth))
+                .layer(middleware::from_fn(auth::auth))
+                .layer(Extension(pool.clone()))
                 .layer(Extension(channel)),
-        )
-        .with_state(Arc::new(AppState::new(pool.clone())));
+        );
 
     #[cfg(debug_assertions)]
     let app = app.layer(LiveReloadLayer::new().request_predicate(not_htmx_predicate));
@@ -222,7 +169,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .into_future();
 
-    let _ = join!(http, monitor(amqp.create_channel().await?, &pool),);
+    let _ = join!(http, monitor(amqp.create_channel().await?, &pool));
 
     Ok(())
 }

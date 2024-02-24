@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     response::{IntoResponse, Response},
     Extension, Form, Router,
@@ -10,9 +8,9 @@ use lapin::{options::BasicPublishOptions, BasicProperties, Channel};
 use maud::{html, Markup};
 use serde::{Deserialize, Serialize};
 
-use crate::{components::boost, AppState, CurrentUser};
+use crate::{auth::CurrentUser, components::boost};
 
-pub(crate) fn route() -> Router<Arc<AppState>> {
+pub(crate) fn route() -> Router {
     Router::new().typed_get(get).typed_post(post)
 }
 

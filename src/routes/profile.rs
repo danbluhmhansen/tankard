@@ -1,21 +1,23 @@
-use std::sync::Arc;
-
 use axum::{
-    extract::State,
-    response::{IntoResponse, Redirect, Response},
+    middleware,
+    response::{IntoResponse, Response},
     Extension, Router,
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
 use futures_util::TryFutureExt;
 use maud::{html, Markup};
+use sqlx::{Pool, Postgres};
 
-use crate::{components::boost, AppState, CurrentUser};
+use crate::{
+    auth::{self, CurrentUser},
+    components::boost,
+};
 
-use super::index;
-
-pub(crate) fn route() -> Router<Arc<AppState>> {
-    Router::new().typed_get(get)
+pub(crate) fn route() -> Router {
+    Router::new()
+        .typed_get(get)
+        .layer(middleware::from_fn(auth::req_auth))
 }
 
 pub(crate) fn page(username: String) -> Markup {
@@ -31,21 +33,17 @@ pub(crate) struct Path;
 pub(crate) async fn get(
     _: Path,
     HxBoosted(boosted): HxBoosted,
-    Extension(user): Extension<Option<CurrentUser>>,
-    State(state): State<Arc<AppState>>,
+    Extension(CurrentUser { id }): Extension<CurrentUser>,
+    Extension(pool): Extension<Pool<Postgres>>,
 ) -> Response {
-    if let Some(user) = user {
-        if let Ok(Some(username)) =
-            sqlx::query!("SELECT username FROM users WHERE id = $1 LIMIT 1;", user.id)
-                .fetch_one(&state.pool)
-                .map_ok(|user| user.username)
-                .await
-        {
-            boost(page(username), true, boosted).into_response()
-        } else {
-            todo!()
-        }
+    if let Ok(Some(username)) =
+        sqlx::query!("SELECT username FROM users WHERE id = $1 LIMIT 1;", id)
+            .fetch_one(&pool)
+            .map_ok(|user| user.username)
+            .await
+    {
+        boost(page(username), true, boosted).into_response()
     } else {
-        Redirect::to(index::Path.to_uri().path()).into_response()
+        todo!()
     }
 }
