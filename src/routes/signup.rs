@@ -2,10 +2,7 @@ use amqprs::{
     channel::{BasicPublishArguments, Channel},
     BasicProperties,
 };
-use axum::{
-    response::{IntoResponse, Response},
-    Extension, Form, Router,
-};
+use axum::{Extension, Form, Router};
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
 use maud::{html, Markup};
@@ -73,7 +70,7 @@ pub(crate) async fn post(
     Extension(user): Extension<Option<CurrentUser>>,
     Extension(channel): Extension<Channel>,
     Form(Payload { username, password }): Form<Payload>,
-) -> Response {
+) -> Markup {
     if let Ok(init_user) = serde_json::to_vec(&InitUser::new(username, password)) {
         let _ = channel
             .basic_publish(
@@ -83,5 +80,5 @@ pub(crate) async fn post(
             )
             .await;
     }
-    boost(page(), user.is_some(), boosted).into_response()
+    boost(page(), user.is_some(), boosted)
 }

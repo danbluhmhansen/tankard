@@ -106,8 +106,8 @@ pub(crate) async fn get(
     HxBoosted(boosted): HxBoosted,
     Extension(CurrentUser { id }): Extension<CurrentUser>,
     Extension(pool): Extension<Pool<Postgres>>,
-) -> Response {
-    boost(page(is_hx, id, &pool).await, true, boosted).into_response()
+) -> Markup {
+    boost(page(is_hx, id, &pool).await, true, boosted)
 }
 
 #[derive(Deserialize)]
@@ -141,7 +141,7 @@ pub(crate) async fn post(
     Extension(pool): Extension<Pool<Postgres>>,
     Extension(channel): Extension<Channel>,
     Form(Payload { name, description }): Form<Payload>,
-) -> Response {
+) -> Markup {
     if let Ok(init_game) = serde_json::to_vec(&InitGame::new(id, name, description)) {
         let _ = channel
             .basic_publish(
@@ -151,7 +151,7 @@ pub(crate) async fn post(
             )
             .await;
     }
-    boost(page(is_hx, id, &pool).await, true, boosted).into_response()
+    boost(page(is_hx, id, &pool).await, true, boosted)
 }
 
 #[derive(TypedPath)]

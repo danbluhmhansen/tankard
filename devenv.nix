@@ -1,7 +1,6 @@
 { pkgs, lib, ... }: {
   # https://devenv.sh/basics/
   env.DATABASE_URL = "postgres://postgres:password@localhost:5432/tankard?sslmode=disable";
-  env.DATABASE_DEV_URL = "postgres://postgres:password@localhost:5432/tankard_dev?sslmode=disable";
   env.PASERK = "k4.local.MBRMvUocz642L1jhYCP7ORQ1QXHc6ryMXcASX780D-Q";
   env.AMQP_URL = "amqp://localhost:5672";
 
@@ -11,7 +10,6 @@
     pkgs.cargo-watch
     pkgs.bun
     pkgs.nodePackages.typescript-language-server
-    pkgs.nodePackages.sql-formatter
     pkgs.rustywind
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
