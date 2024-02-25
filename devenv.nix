@@ -9,8 +9,8 @@
     pkgs.git
     pkgs.cargo-watch
     pkgs.bun
+    pkgs.grass-sass
     pkgs.nodePackages.typescript-language-server
-    pkgs.rustywind
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
     frameworks.Security
@@ -22,7 +22,10 @@
   scripts.watch-bundle.exec = ''
     bun build modules/alpine.ts modules/htmx.ts --minify --splitting --watch --outdir=dist --sourcemap=external
   '';
-  scripts.watch-unocss.exec = "bun unocss --watch";
+
+  scripts.build-style.exec = ''
+    grass --load-path=node_modules/@picocss/pico/scss/ --style=compressed style/site.scss dist/site.css
+  '';
 
   scripts.db-init.exec = ''
     psql --dbname=tankard --file=./data/init.sql
@@ -48,18 +51,12 @@
     cargo-check.enable = true;
     clippy.enable = true;
     rustfmt.enable = true;
-    rustywind = {
-      enable = true;
-      entry = "rustywind --write";
-      files = "\.rs$";
-    };
     typos.enable = true;
   };
 
   # https://devenv.sh/processes/
   processes.watch-server.exec = "watch-server";
   processes.watch-bundle.exec = "watch-bundle";
-  processes.watch-unocss.exec = "watch-unocss";
 
   # https://devenv.sh/services/
   services.postgres = {

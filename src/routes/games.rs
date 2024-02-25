@@ -43,7 +43,7 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
         @if let Ok(games) = games {
             table hx-ext="sse" sse-connect=(SsePath) sse-swap=(SSE_EVENT) {
                 thead { tr { th { "Name" } } }
-                tbody class="text-center" {
+                tbody {
                     @for game in games { tr { td { @if let Some(name) = game.name { (name) } } } }
                 }
             }
@@ -55,29 +55,27 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
 
 pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     html! {
-        dialog #add class="inset-0 justify-center items-center w-full h-full target:flex bg-black/50 backdrop-blur-sm" {
-            #dialog class="flex z-10 flex-col gap-4 p-4 max-w-sm bg-white rounded border dark:text-white dark:bg-slate-900" {
-                form method="post" class="flex flex-col gap-2" {
+        dialog #add {
+            #dialog {
+                form method="post" {
                     input
                         type="text"
                         name="name"
                         placeholder="Name"
-                        required
-                        class="p-1 bg-transparent border border-black dark:border-white";
+                        required;
                     input
                         type="textarea"
                         name="description"
-                        placeholder="Description"
-                        class="p-1 bg-transparent border border-black dark:border-white";
+                        placeholder="Description";
                     button type="submit" { "Add" }
                 }
             }
-            a href="#!" hx-boost="false" class="fixed inset-0" {}
+            a href="#!" hx-boost="false" {}
         }
-        #games hx-get=(PartialPath) hx-trigger="revealed" class="flex justify-center" {
+        #games hx-get=(PartialPath) hx-trigger="revealed" {
             @if is_hx { "..." } @else { (table(user_id, pool).await) }
         }
-        a href="#add" hx-boost="false" class="text-center" { "Add" }
+        a href="#add" hx-boost="false" { "Add" }
     }
 }
 

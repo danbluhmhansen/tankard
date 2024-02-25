@@ -73,19 +73,17 @@ pub(crate) struct Path;
 
 pub(crate) fn page() -> Markup {
     html! {
-        form method="post" class="flex flex-col gap-2" {
+        form method="post" {
             input
                 type="text"
                 name="username"
                 placeholder="Username"
-                required
-                class="p-1 bg-transparent border border-black dark:border-white";
+                required;
             input
                 type="password"
                 name="password"
                 placeholder="Password"
-                required
-                class="p-1 bg-transparent border border-black dark:border-white";
+                required;
             button type="submit" { "Sign in" }
         }
     }

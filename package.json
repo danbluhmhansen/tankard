@@ -3,11 +3,10 @@
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
+    "@picocss/pico": "^2.0.3",
     "@types/alpinejs": "^3.13.6",
     "@types/alpinejs__morph": "^3.13.3",
-    "@types/bun": "latest",
-    "@unocss/cli": "^0.58.5",
-    "unocss": "^0.58.5"
+    "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
