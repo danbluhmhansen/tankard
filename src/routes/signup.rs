@@ -8,7 +8,7 @@ use axum_htmx::HxBoosted;
 use maud::{html, Markup};
 use serde::Deserialize;
 
-use crate::{auth::CurrentUser, commands::Command, components::boost, Queue};
+use crate::{auth::CurrentUser, commands::Command, components::boost, Exchange, Queue};
 
 pub(crate) fn route() -> Router {
     Router::new().typed_get(get).typed_post(post)
@@ -59,14 +59,8 @@ pub(crate) async fn post(
     Extension(channel): Extension<Channel>,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Markup {
-    if let Ok(content) = (Command::InitUser { username, password }).try_into() {
-        let _ = channel
-            .basic_publish(
-                BasicProperties::default(),
-                content,
-                BasicPublishArguments::new("", Queue::Db.into()),
-            )
-            .await;
-    }
+    let _ = Command::InitUser { username, password }
+        .publish(&channel, Queue::Db, Exchange::Default)
+        .await;
     boost(page(), user.is_some(), boosted)
 }

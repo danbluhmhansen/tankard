@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use amqprs::{
     channel::{BasicAckArguments, BasicPublishArguments, Channel},
     consumer::AsyncConsumer,
@@ -23,6 +25,24 @@ pub(crate) enum Command {
         name: String,
         description: Option<String>,
     },
+}
+
+impl Command {
+    pub(crate) async fn publish(
+        &self,
+        channel: &Channel,
+        queue: Queue,
+        exchange: Exchange,
+    ) -> Result<(), Box<dyn Error>> {
+        channel
+            .basic_publish(
+                BasicProperties::default(),
+                self.try_into()?,
+                BasicPublishArguments::new(exchange.into(), queue.into()),
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 impl TryFrom<&[u8]> for Command {
@@ -73,29 +93,17 @@ impl AsyncConsumer for AppConsumer {
                 let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
                     .fetch_all(&self.pool)
                     .await;
-                if let Ok(content) = Command::RefreshUsers.try_into() {
-                    let _ = channel
-                        .basic_publish(
-                            BasicProperties::default(),
-                            content,
-                            BasicPublishArguments::new(Exchange::Sse.into(), Queue::Sse.into()),
-                        )
-                        .await;
-                }
+                let _ = Command::RefreshUsers
+                    .publish(channel, Queue::Sse, Exchange::Sse)
+                    .await;
             }
             Ok(Command::RefreshGames) => {
                 let _ = sqlx::query!("REFRESH MATERIALIZED VIEW games;")
                     .fetch_all(&self.pool)
                     .await;
-                if let Ok(content) = Command::RefreshGames.try_into() {
-                    let _ = channel
-                        .basic_publish(
-                            BasicProperties::default(),
-                            content,
-                            BasicPublishArguments::new(Exchange::Sse.into(), Queue::Sse.into()),
-                        )
-                        .await;
-                }
+                let _ = Command::RefreshGames
+                    .publish(channel, Queue::Sse, Exchange::Sse)
+                    .await;
             }
             Ok(Command::InitUser { username, password }) => {
                 let _ = sqlx::query!(
@@ -105,15 +113,9 @@ impl AsyncConsumer for AppConsumer {
                         )
                         .fetch_all(&self.pool)
                         .await;
-                if let Ok(content) = Command::RefreshUsers.try_into() {
-                    let _ = channel
-                        .basic_publish(
-                            BasicProperties::default(),
-                            content,
-                            BasicPublishArguments::new("", Queue::Db.into()),
-                        )
-                        .await;
-                }
+                let _ = Command::RefreshUsers
+                    .publish(channel, Queue::Db, Exchange::Default)
+                    .await;
             }
             Ok(Command::InitGame {
                 id,
@@ -128,17 +130,11 @@ impl AsyncConsumer for AppConsumer {
                         )
                         .fetch_all(&self.pool)
                         .await;
-                if let Ok(content) = Command::RefreshGames.try_into() {
-                    let _ = channel
-                        .basic_publish(
-                            BasicProperties::default(),
-                            content,
-                            BasicPublishArguments::new("", Queue::Db.into()),
-                        )
-                        .await;
-                }
+                let _ = Command::RefreshGames
+                    .publish(channel, Queue::Db, Exchange::Default)
+                    .await;
             }
-            _ => {}
+            Err(_) => {}
         }
 
         let _ = channel

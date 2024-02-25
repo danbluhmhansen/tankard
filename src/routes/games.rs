@@ -23,7 +23,7 @@ use crate::{
     auth::{self, CurrentUser},
     commands::Command,
     components::boost,
-    Queue,
+    Exchange, Queue,
 };
 
 pub(crate) fn route() -> Router {
@@ -129,21 +129,13 @@ pub(crate) async fn post(
     Extension(channel): Extension<Channel>,
     Form(Payload { name, description }): Form<Payload>,
 ) -> Markup {
-    if let Ok(content) = (Command::InitGame {
+    let _ = Command::InitGame {
         id,
         name,
         description,
-    })
-    .try_into()
-    {
-        let _ = channel
-            .basic_publish(
-                BasicProperties::default(),
-                content,
-                BasicPublishArguments::new("", Queue::Db.into()),
-            )
-            .await;
     }
+    .publish(&channel, Queue::Db, Exchange::Default)
+    .await;
     boost(page(is_hx, id, &pool).await, true, boosted)
 }
 

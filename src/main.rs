@@ -27,6 +27,8 @@ enum Queue {
 #[derive(IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 enum Exchange {
+    #[strum(serialize = "")]
+    Default,
     Sse,
 }
 
