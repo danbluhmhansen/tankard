@@ -13,18 +13,24 @@ use uuid::Uuid;
 use crate::{Exchange, Queue};
 
 #[derive(Deserialize, Serialize)]
+pub(crate) struct InitUser {
+    pub(crate) username: String,
+    pub(crate) password: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct InitGame {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) description: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) enum Command {
     RefreshUsers,
     RefreshGames,
-    InitUser {
-        username: String,
-        password: String,
-    },
-    InitGame {
-        id: Uuid,
-        name: String,
-        description: Option<String>,
-    },
+    InitUser(InitUser),
+    InitGame(InitGame),
 }
 
 impl Command {
@@ -34,38 +40,16 @@ impl Command {
         queue: Queue,
         exchange: Exchange,
     ) -> Result<(), Box<dyn Error>> {
-        channel
-            .basic_publish(
-                BasicProperties::default(),
-                self.try_into()?,
-                BasicPublishArguments::new(exchange.into(), queue.into()),
-            )
-            .await?;
+        if let Ok(content) = bincode::serde::encode_to_vec(self, bincode::config::standard()) {
+            channel
+                .basic_publish(
+                    BasicProperties::default(),
+                    content,
+                    BasicPublishArguments::new(exchange.into(), queue.into()),
+                )
+                .await?;
+        }
         Ok(())
-    }
-}
-
-impl TryFrom<&[u8]> for Command {
-    type Error = Box<bincode::ErrorKind>;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        bincode::deserialize(value)
-    }
-}
-
-impl TryFrom<Command> for Vec<u8> {
-    type Error = Box<bincode::ErrorKind>;
-
-    fn try_from(value: Command) -> Result<Self, Self::Error> {
-        bincode::serialize(&value)
-    }
-}
-
-impl TryFrom<&Command> for Vec<u8> {
-    type Error = Box<bincode::ErrorKind>;
-
-    fn try_from(value: &Command) -> Result<Self, Self::Error> {
-        bincode::serialize(value)
     }
 }
 
@@ -88,8 +72,8 @@ impl AsyncConsumer for AppConsumer {
         _basic_properties: BasicProperties,
         content: Vec<u8>,
     ) {
-        match content.as_slice().try_into() {
-            Ok(Command::RefreshUsers) => {
+        match bincode::serde::decode_from_slice(&content, bincode::config::standard()) {
+            Ok((Command::RefreshUsers, _)) => {
                 let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
                     .fetch_all(&self.pool)
                     .await;
@@ -97,7 +81,7 @@ impl AsyncConsumer for AppConsumer {
                     .publish(channel, Queue::Sse, Exchange::Sse)
                     .await;
             }
-            Ok(Command::RefreshGames) => {
+            Ok((Command::RefreshGames, _)) => {
                 let _ = sqlx::query!("REFRESH MATERIALIZED VIEW games;")
                     .fetch_all(&self.pool)
                     .await;
@@ -105,31 +89,24 @@ impl AsyncConsumer for AppConsumer {
                     .publish(channel, Queue::Sse, Exchange::Sse)
                     .await;
             }
-            Ok(Command::InitUser { username, password }) => {
+            Ok((Command::InitUser(init_user), _)) => {
                 let _ = sqlx::query!(
-                            "SELECT id FROM init_users(ARRAY[ROW($1, $2, gen_random_uuid())]::init_users_input[]);",
-                            username,
-                            password
-                        )
-                        .fetch_all(&self.pool)
-                        .await;
+                    "SELECT id FROM init_users($1);",
+                    serde_json::to_value(init_user).unwrap()
+                )
+                .fetch_all(&self.pool)
+                .await;
                 let _ = Command::RefreshUsers
                     .publish(channel, Queue::Db, Exchange::Default)
                     .await;
             }
-            Ok(Command::InitGame {
-                id,
-                name,
-                description,
-            }) => {
+            Ok((Command::InitGame(init_game), _)) => {
                 let _ = sqlx::query!(
-                            "SELECT id FROM init_games(ARRAY[ROW($1, $2, $3, gen_random_uuid())]::init_games_input[]);",
-                            id,
-                            name,
-                            description
-                        )
-                        .fetch_all(&self.pool)
-                        .await;
+                    "SELECT id FROM init_games($1);",
+                    serde_json::to_value(init_game).unwrap()
+                )
+                .fetch_all(&self.pool)
+                .await;
                 let _ = Command::RefreshGames
                     .publish(channel, Queue::Db, Exchange::Default)
                     .await;

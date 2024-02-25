@@ -1,14 +1,16 @@
-use amqprs::{
-    channel::{BasicPublishArguments, Channel},
-    BasicProperties,
-};
+use amqprs::channel::Channel;
 use axum::{Extension, Form, Router};
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
 use maud::{html, Markup};
 use serde::Deserialize;
 
-use crate::{auth::CurrentUser, commands::Command, components::boost, Exchange, Queue};
+use crate::{
+    auth::CurrentUser,
+    commands::{Command, InitUser},
+    components::boost,
+    Exchange, Queue,
+};
 
 pub(crate) fn route() -> Router {
     Router::new().typed_get(get).typed_post(post)
@@ -59,7 +61,7 @@ pub(crate) async fn post(
     Extension(channel): Extension<Channel>,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Markup {
-    let _ = Command::InitUser { username, password }
+    let _ = Command::InitUser(InitUser { username, password })
         .publish(&channel, Queue::Db, Exchange::Default)
         .await;
     boost(page(), user.is_some(), boosted)

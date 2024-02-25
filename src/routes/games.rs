@@ -1,7 +1,4 @@
-use amqprs::{
-    channel::{BasicConsumeArguments, BasicPublishArguments, Channel},
-    BasicProperties,
-};
+use amqprs::channel::{BasicConsumeArguments, Channel};
 use axum::{
     http::StatusCode,
     middleware,
@@ -13,6 +10,7 @@ use axum::{
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::{HxBoosted, HxRequest};
+use bincode::error::DecodeError;
 use maud::{html, Markup};
 use serde::Deserialize;
 use sqlx::{Pool, Postgres};
@@ -21,7 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::{self, CurrentUser},
-    commands::Command,
+    commands::{Command, InitGame},
     components::boost,
     Exchange, Queue,
 };
@@ -129,11 +127,11 @@ pub(crate) async fn post(
     Extension(channel): Extension<Channel>,
     Form(Payload { name, description }): Form<Payload>,
 ) -> Markup {
-    let _ = Command::InitGame {
+    let _ = Command::InitGame(InitGame {
         id,
         name,
         description,
-    }
+    })
     .publish(&channel, Queue::Db, Exchange::Default)
     .await;
     boost(page(is_hx, id, &pool).await, true, boosted)
@@ -160,16 +158,14 @@ pub(crate) async fn sse(
         let table = table(id, &pool).await.into_string();
 
         let stream = UnboundedReceiverStream::new(rx).map(move |msg| {
-            match msg
-                .content
-                .as_ref()
-                .map(|content| content.as_slice().try_into())
-            {
-                Some(Ok(Command::RefreshGames)) => {
+            match msg.content.as_ref().map(|content| {
+                bincode::serde::decode_from_slice(content, bincode::config::standard())
+            }) {
+                Some(Ok((Command::RefreshGames, _))) => {
                     Ok(Event::default().event(SSE_EVENT).data(table.clone()))
                 }
                 Some(Err(err)) => Err(err),
-                _ => Err(Box::new(bincode::ErrorKind::Custom("empty message".into()))),
+                _ => Err(DecodeError::Other("empty message")),
             }
         });
 
