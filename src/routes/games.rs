@@ -14,14 +14,16 @@ use axum::{
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::{HxBoosted, HxRequest};
 use maud::{html, Markup};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::{Pool, Postgres};
 use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt};
 use uuid::Uuid;
 
 use crate::{
     auth::{self, CurrentUser},
+    commands::Command,
     components::boost,
+    Queue,
 };
 
 pub(crate) fn route() -> Router {
@@ -33,20 +35,22 @@ pub(crate) fn route() -> Router {
         .layer(middleware::from_fn(auth::req_auth))
 }
 
+const SSE_EVENT: &str = "rfsh-games";
+
 pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     let games = sqlx::query!("SELECT name FROM games WHERE user_id = $1;", user_id)
         .fetch_all(pool)
         .await;
     html! {
         @if let Ok(games) = games {
-            table hx-ext="sse" sse-connect=(SsePath) sse-swap="rfsh-games" {
+            table hx-ext="sse" sse-connect=(SsePath) sse-swap=(SSE_EVENT) {
                 thead { tr { th { "Name" } } }
                 tbody class="text-center" {
                     @for game in games { tr { td { @if let Some(name) = game.name { (name) } } } }
                 }
             }
         } @else {
-            p hx-ext="sse" sse-connect=(SsePath) sse-swap="rfsh-games" { "No games..." }
+            p hx-ext="sse" sse-connect=(SsePath) sse-swap=(SSE_EVENT) { "No games..." }
         }
     }
 }
@@ -116,23 +120,6 @@ pub(crate) struct Payload {
     description: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct InitGame {
-    pub(crate) id: Uuid,
-    pub(crate) name: String,
-    pub(crate) description: Option<String>,
-}
-
-impl InitGame {
-    pub(crate) fn new(id: Uuid, name: String, description: Option<String>) -> Self {
-        Self {
-            id,
-            name,
-            description,
-        }
-    }
-}
-
 pub(crate) async fn post(
     _: Path,
     HxRequest(is_hx): HxRequest,
@@ -142,12 +129,18 @@ pub(crate) async fn post(
     Extension(channel): Extension<Channel>,
     Form(Payload { name, description }): Form<Payload>,
 ) -> Markup {
-    if let Ok(init_game) = serde_json::to_vec(&InitGame::new(id, name, description)) {
+    if let Ok(content) = (Command::InitGame {
+        id,
+        name,
+        description,
+    })
+    .try_into()
+    {
         let _ = channel
             .basic_publish(
                 BasicProperties::default(),
-                init_game,
-                BasicPublishArguments::new("", "db"),
+                content,
+                BasicPublishArguments::new("", Queue::Db.into()),
             )
             .await;
     }
@@ -166,25 +159,25 @@ pub(crate) async fn sse(
 ) -> Response {
     if let Ok((_, rx)) = channel
         .basic_consume_rx(
-            BasicConsumeArguments::new("sse", "")
+            BasicConsumeArguments::new(Queue::Sse.into(), "")
                 .auto_ack(true)
                 .finish(),
         )
         .await
     {
-        let table = table(id, &pool).await;
+        let table = table(id, &pool).await.into_string();
 
         let stream = UnboundedReceiverStream::new(rx).map(move |msg| {
-            if let Some("rfsh-games") = msg
+            match msg
                 .content
                 .as_ref()
-                .and_then(|content| std::str::from_utf8(content).ok())
+                .map(|content| content.as_slice().try_into())
             {
-                Ok(Event::default()
-                    .event("rfsh-games")
-                    .data(table.clone().into_string()))
-            } else {
-                Err("cannot parse content")
+                Some(Ok(Command::RefreshGames)) => {
+                    Ok(Event::default().event(SSE_EVENT).data(table.clone()))
+                }
+                Some(Err(err)) => Err(err),
+                _ => Err(Box::new(bincode::ErrorKind::Custom("empty message".into()))),
             }
         });
 

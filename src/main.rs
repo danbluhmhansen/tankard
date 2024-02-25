@@ -5,6 +5,7 @@ use amqprs::channel::{
 };
 use axum::{extract::Request, middleware, Extension, Router};
 use sqlx::postgres::PgPoolOptions;
+use strum::IntoStaticStr;
 use tokio::{join, net::TcpListener};
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
@@ -15,6 +16,19 @@ mod auth;
 mod commands;
 mod components;
 mod routes;
+
+#[derive(IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+enum Queue {
+    Db,
+    Sse,
+}
+
+#[derive(IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+enum Exchange {
+    Sse,
+}
 
 #[cfg(debug_assertions)]
 fn not_htmx_predicate<T>(req: &Request<T>) -> bool {
@@ -37,14 +51,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let channel = amqp.open_channel(None).await?;
 
     channel
-        .queue_declare(QueueDeclareArguments::new("db"))
+        .queue_declare(QueueDeclareArguments::new(Queue::Db.into()))
         .await?;
     channel
-        .queue_declare(QueueDeclareArguments::new("sse"))
+        .queue_declare(QueueDeclareArguments::new(Queue::Sse.into()))
         .await?;
     channel
         .exchange_declare(ExchangeDeclareArguments::of_type(
-            "sse",
+            Exchange::Sse.into(),
             ExchangeType::Fanout,
         ))
         .await?;
@@ -75,8 +89,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let channel = amqp.open_channel(None).await?;
     let monitor = channel.basic_consume(
-        commands::TankardConsumer::new(pool),
-        BasicConsumeArguments::new("db", ""),
+        commands::AppConsumer::new(pool),
+        BasicConsumeArguments::new(Queue::Db.into(), ""),
     );
 
     let _ = join!(http, monitor);

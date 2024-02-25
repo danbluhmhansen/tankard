@@ -6,9 +6,9 @@ use axum::{Extension, Form, Router};
 use axum_extra::routing::{RouterExt, TypedPath};
 use axum_htmx::HxBoosted;
 use maud::{html, Markup};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::{auth::CurrentUser, components::boost};
+use crate::{auth::CurrentUser, commands::Command, components::boost, Queue};
 
 pub(crate) fn route() -> Router {
     Router::new().typed_get(get).typed_post(post)
@@ -52,18 +52,6 @@ pub(crate) struct Payload {
     password: String,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct InitUser {
-    pub(crate) username: String,
-    pub(crate) password: String,
-}
-
-impl InitUser {
-    pub(crate) fn new(username: String, password: String) -> Self {
-        Self { username, password }
-    }
-}
-
 pub(crate) async fn post(
     _: Path,
     HxBoosted(boosted): HxBoosted,
@@ -71,12 +59,12 @@ pub(crate) async fn post(
     Extension(channel): Extension<Channel>,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Markup {
-    if let Ok(init_user) = serde_json::to_vec(&InitUser::new(username, password)) {
+    if let Ok(content) = (Command::InitUser { username, password }).try_into() {
         let _ = channel
             .basic_publish(
                 BasicProperties::default(),
-                init_user,
-                BasicPublishArguments::new("", "db"),
+                content,
+                BasicPublishArguments::new("", Queue::Db.into()),
             )
             .await;
     }
