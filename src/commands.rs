@@ -20,7 +20,7 @@ pub(crate) struct InitUser {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct InitGame {
-    pub(crate) id: Uuid,
+    pub(crate) user_id: Uuid,
     pub(crate) name: String,
     pub(crate) description: Option<String>,
 }
@@ -92,7 +92,7 @@ impl AsyncConsumer for AppConsumer {
             Ok((Command::InitUser(init_user), _)) => {
                 let _ = sqlx::query!(
                     "SELECT id FROM init_users($1);",
-                    serde_json::to_value(init_user).unwrap()
+                    serde_json::to_value([init_user]).unwrap()
                 )
                 .fetch_all(&self.pool)
                 .await;
@@ -103,7 +103,7 @@ impl AsyncConsumer for AppConsumer {
             Ok((Command::InitGame(init_game), _)) => {
                 let _ = sqlx::query!(
                     "SELECT id FROM init_games($1);",
-                    serde_json::to_value(init_game).unwrap()
+                    serde_json::to_value([init_game]).unwrap()
                 )
                 .fetch_all(&self.pool)
                 .await;

@@ -126,7 +126,7 @@ pub(crate) async fn post(
     Form(Payload { name, description }): Form<Payload>,
 ) -> Markup {
     let _ = Command::InitGame(InitGame {
-        id,
+        user_id: id,
         name,
         description,
     })
