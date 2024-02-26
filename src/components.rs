@@ -4,7 +4,10 @@ use crate::routes;
 
 pub(crate) fn boost(content: Markup, signed_in: bool, boosted: bool) -> Markup {
     if boosted {
-        main(content, signed_in)
+        html! {
+            (header(signed_in))
+            (main(content))
+        }
     } else {
         full(content, signed_in)
     }
@@ -23,7 +26,8 @@ fn full(content: Markup, signed_in: bool) -> Markup {
                 script type="module" src="htmx.js" {}
             }
             body x-data {
-                (main(content, signed_in))
+                (header(signed_in))
+                (main(content))
             }
         }
     }
@@ -53,11 +57,6 @@ fn header(signed_in: bool) -> Markup {
     }
 }
 
-fn main(content: Markup, signed_in: bool) -> Markup {
-    html! {
-        main class="container" {
-            (header(signed_in))
-            (content)
-        }
-    }
+fn main(content: Markup) -> Markup {
+    html! { main { (content) } }
 }
