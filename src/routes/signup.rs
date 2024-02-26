@@ -22,18 +22,21 @@ pub(crate) struct Path;
 
 pub(crate) fn page() -> Markup {
     html! {
-        form method="post" {
-            input
-                type="text"
-                name="username"
-                placeholder="Username"
-                required;
-            input
-                type="password"
-                name="password"
-                placeholder="Password"
-                required;
-            button type="submit" { "Sign up" }
+        section {
+            h1 { "Sign up" }
+            form method="post" {
+                input
+                    type="text"
+                    name="username"
+                    placeholder="Username"
+                    required;
+                input
+                    type="password"
+                    name="password"
+                    placeholder="Password"
+                    required;
+                button type="submit" { "Sign up" }
+            }
         }
     }
 }

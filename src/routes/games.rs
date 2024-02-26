@@ -56,8 +56,9 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
 pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     html! {
         dialog #add {
-            #dialog {
-                form method="post" {
+            article {
+                header { h1 { "Add game" } }
+                form #add method="post" {
                     input
                         type="text"
                         name="name"
@@ -67,15 +68,20 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
                         type="textarea"
                         name="description"
                         placeholder="Description";
-                    button type="submit" { "Add" }
+                }
+                footer {
+                    a href="#!" hx-boost="false" { "Cancel" }
+                    button type="submit" form="add" { "Add" }
                 }
             }
-            a href="#!" hx-boost="false" {}
         }
-        #games hx-get=(PartialPath) hx-trigger="revealed" {
-            @if is_hx { "..." } @else { (table(user_id, pool).await) }
+        section {
+            h1 { "Games" }
+            a href="#add" hx-boost="false" { "Add" }
+            #games hx-get=(PartialPath) hx-trigger="revealed" {
+                @if is_hx { "..." } @else { (table(user_id, pool).await) }
+            }
         }
-        a href="#add" hx-boost="false" { "Add" }
     }
 }
 

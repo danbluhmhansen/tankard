@@ -15,8 +15,10 @@ pub(crate) struct Path;
 
 pub(crate) fn page() -> Markup {
     html! {
-        h1 { "Hello, World!" }
-        button "@click"="console.log('clicked')" { "Click me!" }
+        section {
+            h1 { "Hello, World!" }
+            button "@click"="console.log('clicked')" { "Click me!" }
+        }
     }
 }
 

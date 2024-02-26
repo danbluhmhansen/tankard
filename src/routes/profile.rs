@@ -22,7 +22,7 @@ pub(crate) fn route() -> Router {
 
 pub(crate) fn page(username: String) -> Markup {
     html! {
-        h1 { "Hello, " (username) "!" }
+        section { h1 { "Hello, " (username) "!" } }
     }
 }
 
