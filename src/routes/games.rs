@@ -94,6 +94,7 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
                     button type="submit" name="submit" value=(Submit::Drop) class="secondary" { "Remove" }
                 }
                 table x-data="{ toggle: false }" {
+                    colgroup { col span="1" style="width: 18px;"; col span="1"; }
                     thead {
                         tr {
                             th { input type="checkbox" x-model="toggle"; }
@@ -108,6 +109,7 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
                         sse-connect=(SsePath)
                         sse-swap=(SSE_EVENT) {
                         @if !is_hx { (table(user_id, pool).await) }
+                        @else { tr class="htmx-indicator" { td colspan="100%" { "Loading..." } } }
                     }
                 }
             }
