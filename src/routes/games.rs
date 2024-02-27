@@ -59,15 +59,14 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
             article {
                 header { h1 { "Add game" } }
                 form #add method="post" {
-                    input
-                        type="text"
-                        name="name"
-                        placeholder="Name"
-                        required;
-                    input
-                        type="textarea"
-                        name="description"
-                        placeholder="Description";
+                    label {
+                        span { "Name" }
+                        input type="text" name="name" required autofocus;
+                    }
+                    label {
+                        span { "Description" }
+                        input type="textarea" name="description";
+                    }
                 }
                 footer {
                     a href="#!" hx-boost="false" { "Cancel" }

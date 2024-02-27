@@ -76,16 +76,14 @@ pub(crate) fn page() -> Markup {
         section {
             h1 { "Sign in" }
             form method="post" {
-                input
-                    type="text"
-                    name="username"
-                    placeholder="Username"
-                    required;
-                input
-                    type="password"
-                    name="password"
-                    placeholder="Password"
-                    required;
+                label {
+                    span { "Username" }
+                    input type="text" name="username" required autofocus;
+                }
+                label {
+                    span { "Password" }
+                    input type="password" name="password" required;
+                }
                 button type="submit" { "Sign in" }
             }
         }
