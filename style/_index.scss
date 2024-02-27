@@ -226,7 +226,7 @@ div:has(> table) {
   }
 
   table {
-    border-spacing: 0;
+    border-collapse: collapse;
 
     thead {
       tr {
@@ -235,6 +235,16 @@ div:has(> table) {
         @media (prefers-color-scheme: dark) {
           background: $bg-tertiary-dark;
         }
+
+        th,
+        td {
+          padding: .5rem;
+        }
+      }
+    }
+
+    tfoot {
+      tr {
 
         th,
         td {

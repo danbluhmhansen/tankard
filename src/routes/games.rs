@@ -41,14 +41,9 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
         .await;
     html! {
         @if let Ok(games) = games {
-            table hx-ext="sse" sse-connect=(SsePath) sse-swap=(SSE_EVENT) {
-                thead { tr { th { "Name" } } }
-                tbody {
-                    @for game in games { tr { td { @if let Some(name) = game.name { (name) } } } }
-                }
-            }
+            @for game in games { tr { td { @if let Some(name) = game.name { (name) } } } }
         } @else {
-            p hx-ext="sse" sse-connect=(SsePath) sse-swap=(SSE_EVENT) { "No games..." }
+            tr { "No games" }
         }
     }
 }
@@ -58,7 +53,7 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
         dialog #add {
             article {
                 header { h1 { "Add game" } }
-                form #add method="post" {
+                form #add-form method="post" {
                     label {
                         span { "Name" }
                         input type="text" name="name" required autofocus;
@@ -70,7 +65,7 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
                 }
                 footer {
                     a href="#!" hx-boost="false" { "Cancel" }
-                    button type="submit" form="add" { "Add" }
+                    button type="submit" form="add-form" { "Add" }
                 }
             }
         }
@@ -78,9 +73,17 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
             h1 { "Games" }
             #games {
                 div { a href="#add" hx-boost="false" { "Add" } }
-                // TODO: use alpine morph swap
-                div hx-get=(PartialPath) hx-trigger="revealed" hx-swap="outerHTML" {
-                    @if is_hx { "..." } @else { (table(user_id, pool).await) }
+                table {
+                    thead { tr { th { "Name" } } }
+                    tfoot { tr { td {} } }
+                    tbody
+                        hx-get=(PartialPath)
+                        hx-trigger="revealed"
+                        hx-ext="sse"
+                        sse-connect=(SsePath)
+                        sse-swap=(SSE_EVENT) {
+                        @if !is_hx { (table(user_id, pool).await) }
+                    }
                 }
             }
         }
