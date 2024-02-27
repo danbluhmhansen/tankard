@@ -1,8 +1,24 @@
 @use "../node_modules/modern-normalize/modern-normalize.css";
 
+$bg-primary-light: white;
+$bg-secondary-light: #cbd5e1;
+$bg-tertiary-light: #94a3b8;
+$bg-primary-dark: #0f172a;
+$bg-secondary-dark: #1e293b;
+$bg-tertiary-dark: #334155;
+
+$primary: #0ea5e9;
+$primary-hover: #0284c7;
+
+$xs: 640px;
+$sm: 768px;
+$md: 1024px;
+$lg: 1280px;
+$xl: 1536px;
+
 html {
   @media (prefers-color-scheme: dark) {
-    background: #0f172a;
+    background: $bg-primary-dark;
     color: white;
   }
 }
@@ -12,73 +28,27 @@ body {
   flex-direction: column;
   align-items: center;
 
-  @media (min-width: 640px) {
-    header {
-      width: 640px;
+  header,
+  main,
+  footer {
+    @media (min-width: $xs) {
+      width: $xs;
     }
 
-    main {
-      width: 640px;
+    @media (min-width: $sm) {
+      width: $sm;
     }
 
-    footer {
-      width: 640px;
-    }
-  }
-
-  @media (min-width: 768px) {
-    header {
-      width: 768px;
+    @media (min-width: $md) {
+      width: $md;
     }
 
-    main {
-      width: 768px;
+    @media (min-width: $lg) {
+      width: $lg;
     }
 
-    footer {
-      width: 768px;
-    }
-  }
-
-  @media (min-width: 1024px) {
-    header {
-      width: 1024px;
-    }
-
-    main {
-      width: 1024px;
-    }
-
-    footer {
-      width: 1024px;
-    }
-  }
-
-  @media (min-width: 1280px) {
-    header {
-      width: 1280px;
-    }
-
-    main {
-      width: 1280px;
-    }
-
-    footer {
-      width: 1280px;
-    }
-  }
-
-  @media (min-width: 1536px) {
-    header {
-      width: 1536px;
-    }
-
-    main {
-      width: 1536px;
-    }
-
-    footer {
-      width: 1536px;
+    @media (min-width: $xl) {
+      width: $xl;
     }
   }
 
@@ -122,24 +92,30 @@ li {
 }
 
 a {
-  color: #0ea5e9;
+  background: inherit;
+  color: $primary;
+  padding: inherit;
+  text-decoration-line: underline;
 
   &:hover {
-    color: #0284c7;
+    color: $primary-hover;
+    background: inherit;
   }
 }
 
 button,
 input[type="submit"] {
-  background: #0ea5e9;
+  background: $primary;
   color: inherit;
   border: none;
   border-radius: .25rem;
   padding: .5rem;
   cursor: pointer;
+  text-decoration: none;
 
   &:hover {
-    background: #0284c7;
+    background: $primary-hover;
+    color: inherit;
   }
 }
 
@@ -148,23 +124,18 @@ input[type="password"],
 input[type="textarea"] {
   background: inherit;
   color: inherit;
-  border-color: inherit;
-  border-width: 1px;
-  border-radius: .25rem;
-  border-style: solid;
   padding: .25rem;
+
+  border: {
+    color: inherit;
+    width: 1px;
+    radius: .25rem;
+    style: solid;
+  }
 }
 
 nav button {
-  background: inherit;
-  color: #0ea5e9;
-  padding: inherit;
-  text-decoration-line: underline;
-
-  &:hover {
-    color: #0284c7;
-    background: inherit;
-  }
+  @extend a;
 }
 
 dialog {
@@ -193,11 +164,11 @@ dialog {
     margin-right: auto;
     border-radius: .25rem;
     padding: 1rem;
-    max-width: 640px;
-    background: white;
+    max-width: $xs;
+    background: $bg-primary-light;
 
     @media (prefers-color-scheme: dark) {
-      background: #0f172a;
+      background: $bg-primary-dark;
     }
 
     header {
@@ -211,16 +182,7 @@ dialog {
       gap: .5rem;
 
       a {
-        color: inherit;
-        text-decoration: none;
-        background: #0ea5e9;
-        border-radius: .25rem;
-        padding: .5rem;
-
-        &:hover {
-          background: #0284c7;
-          color: inherit;
-        }
+        @extend button;
       }
     }
   }
@@ -246,11 +208,11 @@ form {
 }
 
 div:has(> table) {
-  background: #cbd5e1;
+  background: $bg-secondary-light;
   border-radius: .25rem;
 
   @media (prefers-color-scheme: dark) {
-    background: #1e293b;
+    background: $bg-secondary-dark;
   }
 
   div {
@@ -259,16 +221,7 @@ div:has(> table) {
     padding: .5rem;
 
     a {
-      color: inherit;
-      text-decoration: none;
-      background: #0ea5e9;
-      border-radius: .25rem;
-      padding: .5rem;
-
-      &:hover {
-        background: #0284c7;
-        color: inherit;
-      }
+      @extend button;
     }
   }
 
@@ -277,10 +230,10 @@ div:has(> table) {
 
     thead {
       tr {
-        background: #94a3b8;
+        background: $bg-tertiary-light;
 
         @media (prefers-color-scheme: dark) {
-          background: #334155;
+          background: $bg-tertiary-dark;
         }
 
         th,
@@ -300,10 +253,10 @@ div:has(> table) {
       }
 
       tr:nth-child(even) {
-        background: #94a3b8;
+        background: $bg-tertiary-light;
 
         @media (prefers-color-scheme: dark) {
-          background: #334155;
+          background: $bg-tertiary-dark;
         }
       }
     }
