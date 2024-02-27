@@ -76,9 +76,12 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
         }
         section {
             h1 { "Games" }
-            a href="#add" hx-boost="false" { "Add" }
-            #games hx-get=(PartialPath) hx-trigger="revealed" {
-                @if is_hx { "..." } @else { (table(user_id, pool).await) }
+            #games {
+                div { a href="#add" hx-boost="false" { "Add" } }
+                // TODO: use alpine morph swap
+                div hx-get=(PartialPath) hx-trigger="revealed" hx-swap="outerHTML" {
+                    @if is_hx { "..." } @else { (table(user_id, pool).await) }
+                }
             }
         }
     }
