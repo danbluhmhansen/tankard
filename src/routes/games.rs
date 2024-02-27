@@ -6,14 +6,18 @@ use axum::{
         sse::{Event, KeepAlive},
         IntoResponse, Redirect, Response, Sse,
     },
-    Extension, Form, Router,
+    Extension, Router,
 };
-use axum_extra::routing::{RouterExt, TypedPath};
+use axum_extra::{
+    extract::Form,
+    routing::{RouterExt, TypedPath},
+};
 use axum_htmx::{HxBoosted, HxRequest};
 use bincode::error::DecodeError;
 use maud::{html, Markup};
 use serde::Deserialize;
 use sqlx::{Pool, Postgres};
+use strum::Display;
 use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt};
 use uuid::Uuid;
 
@@ -36,16 +40,29 @@ pub(crate) fn route() -> Router {
 const SSE_EVENT: &str = "rfsh-games";
 
 pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
-    let games = sqlx::query!("SELECT name FROM games WHERE user_id = $1;", user_id)
+    let games = sqlx::query!("SELECT id, name FROM games WHERE user_id = $1;", user_id)
         .fetch_all(pool)
         .await;
     html! {
         @if let Ok(games) = games {
-            @for game in games { tr { td { @if let Some(name) = game.name { (name) } } } }
+            @for game in games {
+                tr {
+                    td { input type="checkbox" name="ids" value=[game.id] ":checked"="toggle"; }
+                    td { @if let Some(name) = game.name { (name) } }
+                }
+            }
         } @else {
             tr { "No games" }
         }
     }
+}
+
+#[derive(Deserialize, Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub(crate) enum Submit {
+    Save,
+    Drop,
 }
 
 pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
@@ -65,16 +82,24 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
                 }
                 footer {
                     a href="#!" hx-boost="false" { "Cancel" }
-                    button type="submit" form="add-form" { "Add" }
+                    button type="submit" name="submit" value=(Submit::Save) form="add-form" { "Add" }
                 }
             }
         }
         section {
             h1 { "Games" }
-            #games {
-                div { a href="#add" hx-boost="false" { "Add" } }
-                table {
-                    thead { tr { th { "Name" } } }
+            form method="post" {
+                div {
+                    a href="#add" hx-boost="false" { "Add" }
+                    button type="submit" name="submit" value=(Submit::Drop) class="secondary" { "Remove" }
+                }
+                table x-data="{ toggle: false }" {
+                    thead {
+                        tr {
+                            th { input type="checkbox" x-model="toggle"; }
+                            th { "Name" }
+                        }
+                    }
                     tfoot { tr { td {} } }
                     tbody
                         hx-get=(PartialPath)
@@ -123,8 +148,11 @@ pub(crate) async fn get(
 
 #[derive(Deserialize)]
 pub(crate) struct Payload {
-    name: String,
+    submit: Submit,
+    name: Option<String>,
     description: Option<String>,
+    #[serde(default)]
+    ids: Vec<Uuid>,
 }
 
 pub(crate) async fn post(
@@ -134,15 +162,29 @@ pub(crate) async fn post(
     Extension(CurrentUser { id }): Extension<CurrentUser>,
     Extension(pool): Extension<Pool<Postgres>>,
     Extension(channel): Extension<Channel>,
-    Form(Payload { name, description }): Form<Payload>,
-) -> Markup {
-    let _ = Command::InitGame(InitGame {
-        user_id: id,
+    Form(Payload {
+        submit,
         name,
         description,
-    })
-    .publish(&channel, Queue::Db, Exchange::Default)
-    .await;
+        ids,
+    }): Form<Payload>,
+) -> Markup {
+    match submit {
+        Submit::Save => {
+            let _ = Command::InitGame(InitGame {
+                user_id: id,
+                name: name.unwrap(),
+                description,
+            })
+            .publish(&channel, Queue::Db, Exchange::Default)
+            .await;
+        }
+        Submit::Drop => {
+            let _ = Command::DropGames(ids)
+                .publish(&channel, Queue::Db, Exchange::Default)
+                .await;
+        }
+    }
     boost(page(is_hx, id, &pool).await, true, boosted)
 }
 

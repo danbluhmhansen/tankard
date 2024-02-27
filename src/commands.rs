@@ -31,6 +31,7 @@ pub(crate) enum Command {
     RefreshGames,
     InitUser(InitUser),
     InitGame(InitGame),
+    DropGames(Vec<Uuid>),
 }
 
 impl Command {
@@ -107,6 +108,14 @@ impl AsyncConsumer for AppConsumer {
                 )
                 .fetch_all(&self.pool)
                 .await;
+                let _ = Command::RefreshGames
+                    .publish(channel, Queue::Db, Exchange::Default)
+                    .await;
+            }
+            Ok((Command::DropGames(ids), _)) => {
+                let _ = sqlx::query!("SELECT id FROM drop_games($1);", &ids)
+                    .fetch_all(&self.pool)
+                    .await;
                 let _ = Command::RefreshGames
                     .publish(channel, Queue::Db, Exchange::Default)
                     .await;

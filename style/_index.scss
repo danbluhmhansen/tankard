@@ -1,7 +1,7 @@
 @use "../node_modules/modern-normalize/modern-normalize.css";
 
 $bg-primary-light: white;
-$bg-secondary-light: #cbd5e1;
+$bg-secondary-light: #f1f5f9;
 $bg-tertiary-light: #94a3b8;
 $bg-primary-dark: #0f172a;
 $bg-secondary-dark: #1e293b;
@@ -9,6 +9,8 @@ $bg-tertiary-dark: #334155;
 
 $primary: #0ea5e9;
 $primary-hover: #0284c7;
+$secondary: #d946ef;
+$secondary-hover: #c026d3;
 
 $xs: 640px;
 $sm: 768px;
@@ -117,6 +119,14 @@ input[type="submit"] {
     background: $primary-hover;
     color: inherit;
   }
+
+  &.secondary {
+    background: $secondary;
+
+    &:hover {
+      background: $secondary-hover;
+    }
+  }
 }
 
 input[type="text"],
@@ -131,6 +141,26 @@ input[type="textarea"] {
     width: 1px;
     radius: .25rem;
     style: solid;
+  }
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  padding: .5rem;
+  position: relative;
+
+  border: {
+    color: inherit;
+    style: solid;
+    width: 1px;
+  }
+
+  &:checked:after {
+    content: '\2714';
+    font-size: 14px;
+    position: absolute;
+    top: 0px;
+    left: 3px;
   }
 }
 
@@ -207,9 +237,10 @@ form {
   }
 }
 
-div:has(> table) {
+*:has(> table) {
   background: $bg-secondary-light;
   border-radius: .25rem;
+  gap: 0;
 
   @media (prefers-color-scheme: dark) {
     background: $bg-secondary-dark;
@@ -229,11 +260,18 @@ div:has(> table) {
     border-collapse: collapse;
 
     thead {
-      tr {
-        background: $bg-tertiary-light;
+      &:first-child {
+        border-top: {
+          style: solid;
+          width: 1px;
+        }
+      }
 
-        @media (prefers-color-scheme: dark) {
-          background: $bg-tertiary-dark;
+      tr {
+
+        border-bottom: {
+          style: solid;
+          width: 1px;
         }
 
         th,
@@ -255,6 +293,10 @@ div:has(> table) {
 
     tbody {
       tr {
+        border-bottom: {
+          style: solid;
+          width: 1px;
+        }
 
         th,
         td {
@@ -262,13 +304,6 @@ div:has(> table) {
         }
       }
 
-      tr:nth-child(even) {
-        background: $bg-tertiary-light;
-
-        @media (prefers-color-scheme: dark) {
-          background: $bg-tertiary-dark;
-        }
-      }
     }
   }
 }
