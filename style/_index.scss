@@ -7,10 +7,20 @@ $bg-primary-dark: #0f172a;
 $bg-secondary-dark: #1e293b;
 $bg-tertiary-dark: #334155;
 
-$primary: #0ea5e9;
-$primary-hover: #0284c7;
-$secondary: #d946ef;
-$secondary-hover: #c026d3;
+$primary-light: #7dd3fc;
+$primary-hover-light: #38bdf8;
+$primary-dark: #0ea5e9;
+$primary-hover-dark: #0284c7;
+
+$secondary-light: #f0abfc;
+$secondary-hover-light: #e879f9;
+$secondary-dark: #d946ef;
+$secondary-hover-dark: #c026d3;
+
+$tertiary-light: #fdba74;
+$tertiary-hover-light: #fb923c;
+$tertiary-dark: #f97316;
+$tertiary-hover-dark: #ea580c;
 
 $xs: 640px;
 $sm: 768px;
@@ -95,19 +105,19 @@ li {
 
 a {
   background: inherit;
-  color: $primary;
+  color: $primary-dark;
   padding: inherit;
   text-decoration-line: underline;
 
   &:hover {
-    color: $primary-hover;
+    color: $primary-hover-dark;
     background: inherit;
   }
 }
 
 button,
 input[type="submit"] {
-  background: $primary;
+  background: $primary-light;
   color: inherit;
   border: none;
   border-radius: .25rem;
@@ -115,16 +125,48 @@ input[type="submit"] {
   cursor: pointer;
   text-decoration: none;
 
+  @media (prefers-color-scheme: dark) {
+    background: $primary-dark;
+  }
+
   &:hover {
-    background: $primary-hover;
+    background: $primary-hover-light;
     color: inherit;
+
+    @media (prefers-color-scheme: dark) {
+      background: $primary-hover-dark;
+    }
   }
 
   &.secondary {
-    background: $secondary;
+    background: $secondary-light;
+
+    @media (prefers-color-scheme: dark) {
+      background: $secondary-dark;
+    }
 
     &:hover {
-      background: $secondary-hover;
+      background: $secondary-hover-light;
+
+      @media (prefers-color-scheme: dark) {
+        background: $secondary-hover-dark;
+      }
+    }
+  }
+
+  &.tertiary {
+    background: $tertiary-light;
+
+    @media (prefers-color-scheme: dark) {
+      background: $tertiary-dark;
+    }
+
+    &:hover {
+      background: $tertiary-hover-light;
+
+      @media (prefers-color-scheme: dark) {
+        background: $tertiary-hover-dark;
+      }
     }
   }
 }
@@ -146,8 +188,10 @@ input[type="textarea"] {
 
 input[type="checkbox"] {
   appearance: none;
-  padding: .5rem;
-  position: relative;
+  display: grid;
+  place-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
 
   border: {
     color: inherit;
@@ -158,9 +202,6 @@ input[type="checkbox"] {
   &:checked:after {
     content: '\2714';
     font-size: 14px;
-    position: absolute;
-    top: 0px;
-    left: 3px;
   }
 }
 
@@ -177,6 +218,7 @@ dialog {
   background: rgba(0, 0, 0, .5);
   backdrop-filter: blur(4px);
   padding: 4rem;
+  z-index: 10;
 
   &:not(:target):not([open]) {
     display: none;
@@ -265,14 +307,24 @@ form {
       tr {
         &:first-child {
           border-top: {
+            color: $bg-tertiary-light;
             style: solid;
             width: 1px;
+          }
+
+          @media (prefers-color-scheme: dark) {
+            border-top-color: $bg-tertiary-dark;
           }
         }
 
         border-bottom: {
+          color: $bg-tertiary-light;
           style: solid;
           width: 1px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+          border-bottom-color: $bg-tertiary-dark;
         }
 
         th,
@@ -295,8 +347,13 @@ form {
     tbody {
       tr {
         border-bottom: {
+          color: $bg-tertiary-light;
           style: solid;
           width: 1px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+          border-bottom-color: $bg-tertiary-dark;
         }
 
         th,

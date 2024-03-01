@@ -62,15 +62,16 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum Submit {
     Save,
+    Set,
     Drop,
 }
 
 pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     html! {
-        dialog #add {
+        dialog #(Submit::Save) {
             article {
                 header { h1 { "Add game" } }
-                form #add-form method="post" {
+                form #{(Submit::Save) "-form"} method="post" {
                     label {
                         span { "Name" }
                         input type="text" name="name" required autofocus;
@@ -82,7 +83,7 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
                 }
                 footer {
                     a href="#!" hx-boost="false" { "Cancel" }
-                    button type="submit" name="submit" value=(Submit::Save) form="add-form" { "Add" }
+                    button type="submit" name="submit" value=(Submit::Save) form={(Submit::Save) "-form"} { "Add" }
                 }
             }
         }
@@ -90,7 +91,8 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
             h1 { "Games" }
             form method="post" {
                 div {
-                    a href="#add" hx-boost="false" { "Add" }
+                    a href={"#" (Submit::Save)} hx-boost="false" { "Add" }
+                    a href={"#" (Submit::Set)} hx-boost="false" class="tertiary" { "Update" }
                     button type="submit" name="submit" value=(Submit::Drop) class="secondary" { "Remove" }
                 }
                 table x-data="{ toggle: false }" {
@@ -181,6 +183,7 @@ pub(crate) async fn post(
             .publish(&channel, Queue::Db, Exchange::Default)
             .await;
         }
+        Submit::Set => {}
         Submit::Drop => {
             let _ = Command::DropGames(ids)
                 .publish(&channel, Queue::Db, Exchange::Default)
