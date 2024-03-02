@@ -40,19 +40,48 @@ pub(crate) fn route() -> Router {
 const SSE_EVENT: &str = "rfsh-games";
 
 pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
-    let games = sqlx::query!("SELECT id, name FROM games WHERE user_id = $1;", user_id)
-        .fetch_all(pool)
-        .await;
+    let games = sqlx::query!(
+        "SELECT id, name, description FROM games WHERE user_id = $1;",
+        user_id
+    )
+    .fetch_all(pool)
+    .await;
     html! {
         @if let Ok(games) = games {
-            @for game in games {
-                tr {
-                    td { input type="checkbox" name="ids" value=[game.id] ":checked"="toggle"; }
-                    td { @if let Some(name) = game.name { (name) } }
+            @for (id, name, description) in games.into_iter().filter_map(|g| g.id.zip(g.name).map(|(id, name)| (id, name, g.description.unwrap_or("".to_string())))) {
+                tr
+                    x-init=(format!("games['{id}'] = {{ name: '{name}', description: '{description}' }}"))
+                    "@click"=(format!("
+                        game = {{ id: '{id}', name: '{name}', description: '{description}' }};
+                        window.location.hash = '{}';
+                    ", Submit::Save))
+                    ":style"=(format!("
+                        games['{id}']?.drop
+                            ? {{ background: 'red' }}
+                            : games['{id}']?.old && {{ background: 'orange' }}")) {
+                    td {
+                        div role="group" style="width: fit-content;gap: .25rem;padding: 0;" {
+                            button.tertiary
+                                type="button"
+                                "@click.stop"=(format!("
+                                    if (games['{id}'].old) games['{id}'] = games['{id}'].old
+                                    else {{
+                                        game = {{ id: '{id}', name: '{name}', description: '{description}' }};
+                                        window.location.hash = '{}';
+                                    }}", Submit::Save))
+                            { span ":class"=(format!("games['{id}'].old ? 'tabler-arrow-back' : 'tabler-pencil'")); }
+                            button.secondary
+                                type="button"
+                                "@click.stop"=(format!("games['{id}'].drop = !games['{id}'].drop")) {
+                                span.tabler-trash;
+                            }
+                        }
+                    }
+                    td { span x-text=(format!("games['{id}'].name")); }
                 }
             }
         } @else {
-            tr { "No games" }
+            tr { td colspan="100%" { "No games" } }
         }
     }
 }
@@ -66,40 +95,48 @@ pub(crate) enum Submit {
     Drop,
 }
 
-pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
+pub(crate) async fn page() -> Markup {
     html! {
-        dialog #(Submit::Save) {
-            article {
-                header { h1 { "Add game" } }
-                form #{(Submit::Save) "-form"} method="post" {
-                    label {
-                        span { "Name" }
-                        input type="text" name="name" required autofocus;
+        section x-data="{ games: {}, game: { id: '', name: '', description: '' } }" {
+            dialog #(Submit::Save) {
+                article {
+                    header { h1 { "Add game" } }
+                    form #{(Submit::Save) "-form"} method="post" {
+                        label {
+                            span { "Name" }
+                            input type="text" name="name" required autofocus x-model="game.name";
+                        }
+                        label {
+                            span { "Description" }
+                            input type="textarea" name="description" x-model="game.description";
+                        }
                     }
-                    label {
-                        span { "Description" }
-                        input type="textarea" name="description";
+                    footer {
+                        a href="#" hx-boost="false" { "Cancel" }
+                        button
+                            type="button"
+                            "@click"="
+                                games[game.id] = { ...game, old: game.old ?? game };
+                                window.location.hash = '';"
+                        { "Add" }
                     }
-                }
-                footer {
-                    a href="#!" hx-boost="false" { "Cancel" }
-                    button type="submit" name="submit" value=(Submit::Save) form={(Submit::Save) "-form"} { "Add" }
                 }
             }
-        }
-        section {
             h1 { "Games" }
             form method="post" {
-                div {
-                    a href={"#" (Submit::Save)} hx-boost="false" { "Add" }
-                    a href={"#" (Submit::Set)} hx-boost="false" class="tertiary" { "Update" }
-                    button type="submit" name="submit" value=(Submit::Drop) class="secondary" { "Remove" }
-                }
-                table x-data="{ toggle: false }" {
-                    colgroup { col span="1" style="width: 18px;"; col span="1"; }
+                div {}
+                table {
+                    colgroup { col width="1%"; col; }
                     thead {
                         tr {
-                            th { input type="checkbox" x-model="toggle"; }
+                            th {
+                                a
+                                    href={"#" (Submit::Save)}
+                                    hx-boost="false"
+                                    "@click"="game = { id: crypto.randomUUID(), name: '', description: '' }" {
+                                    span.tabler-plus;
+                                }
+                            }
                             th { "Name" }
                         }
                     }
@@ -110,8 +147,9 @@ pub(crate) async fn page(is_hx: bool, user_id: Uuid, pool: &Pool<Postgres>) -> M
                         hx-ext="sse"
                         sse-connect=(SsePath)
                         sse-swap=(SSE_EVENT) {
-                        @if !is_hx { (table(user_id, pool).await) }
-                        @else { tr class="htmx-indicator" { td colspan="100%" { "Loading..." } } }
+                        tr.htmx-indicator {
+                            td colspan="100%" { span.svg-spinners-gooey-balls-2 style="width: 32px;height: 32px"; }
+                        }
                     }
                 }
             }
@@ -140,14 +178,8 @@ pub(crate) async fn partial(
 #[typed_path("/games")]
 pub(crate) struct Path;
 
-pub(crate) async fn get(
-    _: Path,
-    HxRequest(is_hx): HxRequest,
-    HxBoosted(boosted): HxBoosted,
-    Extension(CurrentUser { id }): Extension<CurrentUser>,
-    Extension(pool): Extension<Pool<Postgres>>,
-) -> Markup {
-    boost(page(is_hx, id, &pool).await, true, boosted)
+pub(crate) async fn get(_: Path, HxBoosted(boosted): HxBoosted) -> Markup {
+    boost(page().await, true, boosted)
 }
 
 #[derive(Deserialize)]
@@ -161,10 +193,8 @@ pub(crate) struct Payload {
 
 pub(crate) async fn post(
     _: Path,
-    HxRequest(is_hx): HxRequest,
     HxBoosted(boosted): HxBoosted,
     Extension(CurrentUser { id }): Extension<CurrentUser>,
-    Extension(pool): Extension<Pool<Postgres>>,
     Extension(channel): Extension<Channel>,
     Form(Payload {
         submit,
@@ -190,7 +220,7 @@ pub(crate) async fn post(
                 .await;
         }
     }
-    boost(page(is_hx, id, &pool).await, true, boosted)
+    boost(page().await, true, boosted)
 }
 
 #[derive(TypedPath)]

@@ -17,7 +17,7 @@ pub(crate) fn page() -> Markup {
     html! {
         section {
             h1 { "Hello, World!" }
-            button "@click"="console.log('clicked')" { "Click me!" }
+            button x-data "@click"="console.log('clicked')" { "Click me!" }
         }
     }
 }

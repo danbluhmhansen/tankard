@@ -25,10 +25,7 @@ fn full(content: Markup, signed_in: bool) -> Markup {
                 script type="module" src="alpine.js" {}
                 script type="module" src="htmx.js" {}
             }
-            body x-data {
-                (header(signed_in))
-                (main(content))
-            }
+            body { (header(signed_in)) (main(content)) }
         }
     }
 }
