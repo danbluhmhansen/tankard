@@ -34,15 +34,10 @@ async fn sign_in<'a>(
     .fetch_one(pool)
     .await?;
 
-    if let Some(id) = user
-        .id
-        .zip(user.check_password)
-        .filter(|(_, c)| *c)
-        .map(|(id, _)| id)
-    {
+    if user.check_password.is_some_and(|c| c) {
         let exp = Duration::from_secs(60 * 60);
         let mut claims = Claims::new_expires_in(&exp)?;
-        claims.subject(&id.to_string())?;
+        claims.subject(&user.id.to_string())?;
 
         let token = local::encrypt(
             &SymmetricKey::<V4>::try_from(std::env::var("PASERK")?.as_str())?,

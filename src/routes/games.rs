@@ -48,7 +48,7 @@ pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
     .await;
     html! {
         @if let Ok(games) = games {
-            @for (id, name, description) in games.into_iter().filter_map(|g| g.id.zip(g.name).map(|(id, name)| (id, name, g.description.unwrap_or("".to_string())))) {
+            @for (id, name, description) in games.into_iter().map(|g| (g.id, g.name, g.description.unwrap_or("".to_string()))) {
                 tr
                     x-init=(format!("games['{id}'] = {{ name: '{name}', description: '{description}' }}"))
                     "@click"=(format!("

@@ -45,3 +45,29 @@ or replace aggregate jsonb_merge_agg (jsonb) (
   stype = jsonb,
   initcond = '{}'
 );
+
+-- create a function that always returns the first non-null value:
+create or replace function public.first_agg (anyelement, anyelement)
+  returns anyelement
+  language sql immutable strict parallel safe as
+'select $1';
+
+-- then wrap an aggregate around it:
+create aggregate public.first (anyelement) (
+  sfunc    = public.first_agg,
+  stype    = anyelement,
+  parallel = safe
+);
+
+-- create a function that always returns the last non-null value:
+create or replace function public.last_agg (anyelement, anyelement)
+  returns anyelement
+  language sql immutable strict parallel safe as
+'select $2';
+
+-- then wrap an aggregate around it:
+create aggregate public.last (anyelement) (
+  sfunc    = public.last_agg,
+  stype    = anyelement,
+  parallel = safe
+);

@@ -74,22 +74,8 @@ impl AsyncConsumer for AppConsumer {
         content: Vec<u8>,
     ) {
         match bincode::serde::decode_from_slice(&content, bincode::config::standard()) {
-            Ok((Command::RefreshUsers, _)) => {
-                let _ = sqlx::query!("REFRESH MATERIALIZED VIEW users;")
-                    .fetch_all(&self.pool)
-                    .await;
-                let _ = Command::RefreshUsers
-                    .publish(channel, Queue::Sse, Exchange::Sse)
-                    .await;
-            }
-            Ok((Command::RefreshGames, _)) => {
-                let _ = sqlx::query!("REFRESH MATERIALIZED VIEW games;")
-                    .fetch_all(&self.pool)
-                    .await;
-                let _ = Command::RefreshGames
-                    .publish(channel, Queue::Sse, Exchange::Sse)
-                    .await;
-            }
+            Ok((Command::RefreshUsers, _)) => {}
+            Ok((Command::RefreshGames, _)) => {}
             Ok((Command::InitUser(init_user), _)) => {
                 let _ = sqlx::query!(
                     "SELECT id FROM init_users($1);",
@@ -98,7 +84,7 @@ impl AsyncConsumer for AppConsumer {
                 .fetch_all(&self.pool)
                 .await;
                 let _ = Command::RefreshUsers
-                    .publish(channel, Queue::Db, Exchange::Default)
+                    .publish(channel, Queue::Sse, Exchange::Sse)
                     .await;
             }
             Ok((Command::InitGame(init_game), _)) => {
@@ -109,7 +95,7 @@ impl AsyncConsumer for AppConsumer {
                 .fetch_all(&self.pool)
                 .await;
                 let _ = Command::RefreshGames
-                    .publish(channel, Queue::Db, Exchange::Default)
+                    .publish(channel, Queue::Sse, Exchange::Sse)
                     .await;
             }
             Ok((Command::DropGames(ids), _)) => {
@@ -117,7 +103,7 @@ impl AsyncConsumer for AppConsumer {
                     .fetch_all(&self.pool)
                     .await;
                 let _ = Command::RefreshGames
-                    .publish(channel, Queue::Db, Exchange::Default)
+                    .publish(channel, Queue::Sse, Exchange::Sse)
                     .await;
             }
             Err(_) => {}

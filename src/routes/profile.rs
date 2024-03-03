@@ -36,11 +36,10 @@ pub(crate) async fn get(
     Extension(CurrentUser { id }): Extension<CurrentUser>,
     Extension(pool): Extension<Pool<Postgres>>,
 ) -> Response {
-    if let Ok(Some(username)) =
-        sqlx::query!("SELECT username FROM users WHERE id = $1 LIMIT 1;", id)
-            .fetch_one(&pool)
-            .map_ok(|user| user.username)
-            .await
+    if let Ok(username) = sqlx::query!("SELECT username FROM users WHERE id = $1 LIMIT 1;", id)
+        .fetch_one(&pool)
+        .map_ok(|user| user.username)
+        .await
     {
         boost(page(username), true, boosted).into_response()
     } else {

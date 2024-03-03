@@ -23,3 +23,24 @@ create or replace function snap_game (id uuid, snap_time timestamptz) returns ga
   where stream_id = snap_game.id and timestamp < snap_time
   returning *;
 $$;
+
+create or replace view "game_latest_snaps" as
+select
+  last(id order by timestamp) as id,
+  stream_id,
+  'snap' as name,
+  max(timestamp) as timestamp,
+  last(data order by timestamp) as data
+from "game_snaps"
+group by stream_id;
+
+create or replace view "game_latest_events" as
+select e.id, e.stream_id, e.name, e.timestamp, e.data
+from "game_events" e
+left join "game_latest_snaps" s on s.stream_id = e.stream_id
+where s is null or s.timestamp < e.timestamp;
+
+create or replace view "game_snapped_events" as
+select * from "game_latest_snaps"
+union
+select * from "game_latest_events";

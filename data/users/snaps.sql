@@ -23,3 +23,24 @@ create or replace function snap_user (id uuid, snap_time timestamptz) returns us
   where stream_id = snap_user.id and timestamp < snap_time
   returning *;
 $$;
+
+create or replace view "user_latest_snaps" as
+select
+  last(id order by timestamp) as id,
+  stream_id,
+  'snap' as name,
+  max(timestamp) as timestamp,
+  last(data order by timestamp) as data
+from "user_snaps"
+group by stream_id;
+
+create or replace view "user_latest_events" as
+select e.id, e.stream_id, e.name, e.timestamp, e.data
+from "user_events" e
+left join "user_latest_snaps" s on s.stream_id = e.stream_id
+where s is null or s.timestamp < e.timestamp;
+
+create or replace view "user_snapped_events" as
+select * from "user_latest_snaps"
+union
+select * from "user_latest_events";

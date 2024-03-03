@@ -1,36 +1,57 @@
-drop materialized view if exists "games";
+create table if not exists "games" (
+  "id" uuid not null primary key references "game_streams" on delete cascade,
+  "user_id" uuid not null references users on delete cascade,
+  "added" timestamptz not null,
+  "updated" timestamptz not null,
+  "name" text not null,
+  "description" text
+);
 
-create materialized view "games" as
-with snaps as (
-  select id, stream_id, timestamp, data from "game_snaps"
-), events as (
-  select * from snaps union (
-    select e.id, e.stream_id, e.timestamp, e.data
-    from "game_events" e
-    where not exists (select 1 from snaps s where s.stream_id = e.stream_id and s.timestamp > e.timestamp)
-  )
-  order by stream_id, timestamp
-), aggs as (
-  select
-    stream_id,
-    min(timestamp) as added,
-    max(timestamp) as updated,
-    (array_agg(data order by timestamp desc))[1] is null as dropped,
-    jsonb_merge_agg (data order by timestamp) as data
-    from events
+create index if not exists "idx_games_user_id" on "games" ("user_id");
+
+create or replace function trg_game_events () returns trigger language plpgsql as $$
+begin
+  insert into "games"
+  select stream_id, user_id, timestamp, timestamp, data ->> 'name', data ->> 'description'
+  from "events"
+  join "game_streams" using (id)
+  where name = 'initialized';
+
+  update "games"
+  set
+    updated = timestamp,
+    name = coalesce(data ->> 'name', games.name),
+    description = coalesce(data ->> 'description', games.description)
+  from "events"
+  where events.stream_id = games.id and events.name = 'set';
+
+  delete from "games" where id in (select stream_id from "events" where name = 'dropped');
+
+  with aggs as (
+    select
+      stream_id,
+      min(timestamp) as added,
+      jsonb_merge_agg (data order by timestamp) as data
+    from "game_snapped_events"
+    where name not in ('dropped', 'restored')
     group by stream_id
-)
-select
-  stream_id as id,
-  user_id,
-  added,
-  updated,
-  data ->> 'name' as name,
-  data ->> 'description' as description
-from aggs
-join "game_streams" s on s.id = stream_id
-where dropped = false;
+  )
+  insert into "games"
+  select
+    e.stream_id,
+    s.user_id,
+    a.added,
+    e.timestamp,
+    a.data ->> 'name',
+    a.data ->> 'description'
+  from "events" e
+  join "game_streams" s on s.id = e.stream_id
+  join "aggs" a using (stream_id)
+  where e.name = 'restored';
 
-create unique index if not exists "idx_games_id" on "games" ("id");
+  return null;
+end;
+$$;
 
-create index if not exists "idx_game_user_id" on "games" ("user_id");
+create or replace trigger trg_game_events after insert on "game_events" referencing new table as "events"
+for each statement execute function trg_game_events();
