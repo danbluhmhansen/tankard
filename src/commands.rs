@@ -7,7 +7,7 @@ use amqprs::{
 };
 use axum::async_trait;
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Postgres};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{Exchange, Queue};
@@ -55,11 +55,11 @@ impl Command {
 }
 
 pub(crate) struct AppConsumer {
-    pub(crate) pool: Pool<Postgres>,
+    pub(crate) pool: PgPool,
 }
 
 impl AppConsumer {
-    pub(crate) fn new(pool: Pool<Postgres>) -> Self {
+    pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 }

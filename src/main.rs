@@ -4,7 +4,7 @@ use amqprs::channel::{
     BasicConsumeArguments, ExchangeDeclareArguments, ExchangeType, QueueDeclareArguments,
 };
 use axum::{extract::Request, middleware, Extension, Router};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{postgres::PgPoolOptions, PgPool};
 use strum::IntoStaticStr;
 use tokio::{join, net::TcpListener};
 use tower::ServiceBuilder;
@@ -65,6 +65,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ))
         .await?;
 
+    let api_pool: &'static PgPool = Box::leak(Box::new(pool.clone()));
+
     let app = Router::new()
         .merge(routes::games::route())
         .merge(routes::index::route())
@@ -72,11 +74,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .merge(routes::signin::route())
         .merge(routes::signout::route())
         .merge(routes::signup::route())
+        .merge(routes::api::route())
         .fallback_service(ServeDir::new("dist"))
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(auth::auth))
-                .layer(Extension(pool.clone()))
+                .layer(Extension(api_pool))
                 .layer(Extension(channel)),
         );
 

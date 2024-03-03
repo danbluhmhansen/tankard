@@ -13,8 +13,8 @@ create or replace function trg_game_events () returns trigger language plpgsql a
 begin
   insert into "games"
   select stream_id, user_id, timestamp, timestamp, data ->> 'name', data ->> 'description'
-  from "events"
-  join "game_streams" using (id)
+  from "events" e
+  join "game_streams" s on s.id = e.stream_id
   where name = 'initialized';
 
   update "games"

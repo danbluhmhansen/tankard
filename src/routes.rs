@@ -1,3 +1,4 @@
+pub(crate) mod api;
 pub(crate) mod games;
 pub(crate) mod index;
 pub(crate) mod profile;

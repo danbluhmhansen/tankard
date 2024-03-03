@@ -15,14 +15,14 @@ use axum_htmx::HxBoosted;
 use maud::{html, Markup};
 use pasetors::{claims::Claims, keys::SymmetricKey, local, version4::V4};
 use serde::Deserialize;
-use sqlx::{Pool, Postgres};
+use sqlx::PgPool;
 
 use crate::{auth::CurrentUser, components::boost};
 
 use super::profile;
 
 async fn sign_in<'a>(
-    pool: &Pool<Postgres>,
+    pool: &PgPool,
     username: String,
     password: String,
 ) -> Result<Option<Cookie<'a>>, Box<dyn Error>> {
@@ -103,11 +103,11 @@ pub(crate) async fn post(
     _: Path,
     HxBoosted(boosted): HxBoosted,
     Extension(user): Extension<Option<CurrentUser>>,
-    Extension(pool): Extension<Pool<Postgres>>,
+    Extension(pool): Extension<&'static PgPool>,
     jar: CookieJar,
     Form(Payload { username, password }): Form<Payload>,
 ) -> Response {
-    if let Ok(Some(cookie)) = sign_in(&pool, username, password).await {
+    if let Ok(Some(cookie)) = sign_in(pool, username, password).await {
         (jar.add(cookie), Redirect::to(profile::Path.to_uri().path())).into_response()
     } else {
         boost(page(), user.is_some(), boosted).into_response()

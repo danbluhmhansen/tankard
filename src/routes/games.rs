@@ -16,7 +16,7 @@ use axum_htmx::{HxBoosted, HxRequest};
 use bincode::error::DecodeError;
 use maud::{html, Markup};
 use serde::Deserialize;
-use sqlx::{Pool, Postgres};
+use sqlx::PgPool;
 use strum::Display;
 use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt};
 use uuid::Uuid;
@@ -39,7 +39,7 @@ pub(crate) fn route() -> Router {
 
 const SSE_EVENT: &str = "rfsh-games";
 
-pub(crate) async fn table(user_id: Uuid, pool: &Pool<Postgres>) -> Markup {
+pub(crate) async fn table(user_id: Uuid, pool: &PgPool) -> Markup {
     let games = sqlx::query!(
         "SELECT id, name, description FROM games WHERE user_id = $1;",
         user_id
@@ -165,7 +165,7 @@ pub(crate) async fn partial(
     _: PartialPath,
     HxRequest(is_hx): HxRequest,
     Extension(CurrentUser { id }): Extension<CurrentUser>,
-    Extension(pool): Extension<Pool<Postgres>>,
+    Extension(pool): Extension<&'static PgPool>,
 ) -> Response {
     if is_hx {
         table(id, &pool).await.into_response()
@@ -230,7 +230,7 @@ pub(crate) struct SsePath;
 pub(crate) async fn sse(
     _: SsePath,
     Extension(CurrentUser { id }): Extension<CurrentUser>,
-    Extension(pool): Extension<Pool<Postgres>>,
+    Extension(pool): Extension<&'static PgPool>,
     Extension(channel): Extension<Channel>,
 ) -> Response {
     if let Ok((_, rx)) = channel
@@ -241,7 +241,7 @@ pub(crate) async fn sse(
         )
         .await
     {
-        let table = table(id, &pool).await.into_string();
+        let table = table(id, pool).await.into_string();
 
         let stream = UnboundedReceiverStream::new(rx).map(move |msg| {
             match msg.content.as_ref().map(|content| {
