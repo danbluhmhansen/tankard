@@ -20,9 +20,17 @@ pub(crate) struct InitUser {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct InitGame {
+    pub(crate) id: Uuid,
     pub(crate) user_id: Uuid,
     pub(crate) name: String,
     pub(crate) description: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct SetGame {
+    pub(crate) id: Uuid,
+    pub(crate) name: Option<String>,
+    pub(crate) description: Option<Option<String>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -30,7 +38,8 @@ pub(crate) enum Command {
     RefreshUsers,
     RefreshGames,
     InitUser(InitUser),
-    InitGame(InitGame),
+    InitGames(Vec<InitGame>),
+    SetGames(Vec<SetGame>),
     DropGames(Vec<Uuid>),
 }
 
@@ -87,10 +96,21 @@ impl AsyncConsumer for AppConsumer {
                     .publish(channel, Queue::Sse, Exchange::Sse)
                     .await;
             }
-            Ok((Command::InitGame(init_game), _)) => {
+            Ok((Command::InitGames(games), _)) => {
                 let _ = sqlx::query!(
                     "SELECT id FROM init_games($1);",
-                    serde_json::to_value([init_game]).unwrap()
+                    serde_json::to_value(games).unwrap()
+                )
+                .fetch_all(&self.pool)
+                .await;
+                let _ = Command::RefreshGames
+                    .publish(channel, Queue::Sse, Exchange::Sse)
+                    .await;
+            }
+            Ok((Command::SetGames(games), _)) => {
+                let _ = sqlx::query!(
+                    "SELECT id FROM set_games($1);",
+                    serde_json::to_value(games).unwrap()
                 )
                 .fetch_all(&self.pool)
                 .await;
@@ -99,6 +119,7 @@ impl AsyncConsumer for AppConsumer {
                     .await;
             }
             Ok((Command::DropGames(ids), _)) => {
+                println!("{ids:?}");
                 let _ = sqlx::query!("SELECT id FROM drop_games($1);", &ids)
                     .fetch_all(&self.pool)
                     .await;
