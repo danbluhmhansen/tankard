@@ -77,24 +77,7 @@ pub(crate) async fn page() -> Markup {
                             th {
                                 div role="group" style="width: fit-content;gap: .25rem;padding: 0;" {
                                     button
-                                        "@click"="
-                                            if (games.some(g => g.new && !g.drop))
-                                                fetch('/api/games', {
-                                                    method: 'POST',
-                                                    headers: { 'Content-Type': 'application/json', },
-                                                    body: JSON.stringify(games.filter(g => g.new && !g.drop))
-                                                });
-                                            if (games.some(g => g.set))
-                                                fetch('/api/games', {
-                                                    method: 'PUT',
-                                                    headers: { 'Content-Type': 'application/json', },
-                                                    body: JSON.stringify(games.filter(g => g.set))
-                                                });
-                                            if (games.some(g => g.drop && !g.new))
-                                                fetch(`/api/games?ids=${games.filter(g => g.drop && !g.new).map(g => g.id).join('&ids=')}`, {
-                                                    method: 'DELETE',
-                                                });
-                                        "
+                                        "@click"="Tankard.gamesSubmit(games)"
                                     { span.tabler-check; }
                                     a
                                         href={"#" (Submit::Save)}

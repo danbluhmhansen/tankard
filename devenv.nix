@@ -21,7 +21,10 @@
   # https://devenv.sh/scripts/
   scripts.watch-server.exec = "cargo watch --exec run";
   scripts.watch-bundle.exec = ''
-    bun build modules/alpine.ts modules/htmx.ts --minify --splitting --watch --outdir=dist --sourcemap=external
+    bun build --minify --splitting --watch --outdir=dist --sourcemap=external \
+      modules/index.ts \
+      modules/alpine.ts \
+      modules/htmx.ts
   '';
   scripts.watch-style.exec = ''
     watchexec --watch style grass --style=compressed style/_index.scss dist/site.css
