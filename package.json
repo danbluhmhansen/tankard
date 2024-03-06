@@ -3,10 +3,12 @@
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
+    "@egoist/tailwindcss-icons": "^1.7.4",
+    "@iconify-json/tabler": "^1.1.106",
     "@types/alpinejs": "^3.13.6",
     "@types/alpinejs__morph": "^3.13.3",
     "@types/bun": "latest",
-    "modern-normalize": "^2.0.0"
+    "tailwindcss": "^3.4.1"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

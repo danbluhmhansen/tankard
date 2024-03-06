@@ -16,7 +16,7 @@ pub(crate) fn boost(content: Markup, signed_in: bool, boosted: bool) -> Markup {
 fn full(content: Markup, signed_in: bool) -> Markup {
     html! {
         (DOCTYPE)
-        html hx-boost="true" hx-ext="alpine-morph" hx-swap="morph:innerHTML" {
+        html hx-boost="true" hx-ext="alpine-morph" hx-swap="morph:innerHTML" class="dark:text-white dark:bg-slate-900" {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width,initial-scale=1";
@@ -26,28 +26,32 @@ fn full(content: Markup, signed_in: bool) -> Markup {
                 script type="module" src="alpine.js" {}
                 script type="module" src="htmx.js" {}
             }
-            body { (header(signed_in)) (main(content)) }
+            body class="flex flex-col items-center" { (header(signed_in)) (main(content)) }
         }
     }
 }
 
 fn header(signed_in: bool) -> Markup {
     html! {
-        header {
-            nav {
-                ul { li { a href=(routes::index::Path) { "Tankard" } } }
-                ul {
+        header class="container my-4" {
+            nav class="grid grid-cols-3" {
+                ul class="flex gap-2 justify-start" {
+                    li { a href=(routes::index::Path) class="text-blue-500 hover:underline" { "Tankard" } }
+                }
+                ul class="flex gap-2 justify-center" {
                     @if signed_in {
-                        li { a href=(routes::games::Path) { "Games" } }
+                        li { a href=(routes::games::Path) class="text-blue-500 hover:underline" { "Games" } }
                     }
                 }
-                ul {
+                ul class="flex gap-2 justify-end" {
                     @if signed_in {
-                        li { a href=(routes::profile::Path) { "Profile" } }
-                        li { form action=(routes::signout::Path) method="post" { button type="submit" { "Sign out" } } }
+                        li { a href=(routes::profile::Path) class="text-blue-500 hover:underline" { "Profile" } }
+                        li { form action=(routes::signout::Path) method="post" {
+                            button type="submit" class="text-blue-500 hover:underline" { "Sign out" } }
+                        }
                     } @else {
-                        li { a href=(routes::signup::Path) { "Sign up" } }
-                        li { a href=(routes::signin::Path) { "Sign in" } }
+                        li { a href=(routes::signup::Path) class="text-blue-500 hover:underline" { "Sign up" } }
+                        li { a href=(routes::signin::Path) class="text-blue-500 hover:underline" { "Sign in" } }
                     }
                 }
             }
@@ -56,5 +60,31 @@ fn header(signed_in: bool) -> Markup {
 }
 
 fn main(content: Markup) -> Markup {
-    html! { main { (content) } }
+    html! { main class="container" { (content) } }
 }
+
+const BUTTON: &str = "grid p-1 rounded";
+
+const BUTTON_LIGHT: &str = "bg-sky-300 hover:bg-sky-400 active:bg-sky-500";
+const BUTTON_DARK: &str = "dark:bg-sky-500 dark:hover:bg-sky-600 dark:active:bg-sky-700 ";
+
+const BUTTON_WARN_LIGHT: &str = "bg-fuchsia-300 hover:bg-fuchsia-400 active:bg-fuchsia-500";
+const BUTTON_WARN_DARK: &str =
+    "dark:bg-fuchsia-500 dark:hover:bg-fuchsia-600 dark:active:bg-fuchsia-700 ";
+
+const BUTTON_ERROR_LIGHT: &str = "bg-orange-300 hover:bg-orange-400 active:bg-orange-500";
+const BUTTON_ERROR_DARK: &str =
+    "dark:bg-orange-500 dark:hover:bg-orange-600 dark:active:bg-orange-700 ";
+
+pub(crate) const BTN: &str = const_str::format!("{BUTTON} {BUTTON_LIGHT} {BUTTON_DARK}");
+pub(crate) const BTN_WARN: &str =
+    const_str::format!("{BUTTON} {BUTTON_WARN_LIGHT} {BUTTON_WARN_DARK}");
+pub(crate) const BTN_ERR: &str =
+    const_str::format!("{BUTTON} {BUTTON_ERROR_LIGHT} {BUTTON_ERROR_DARK}");
+
+pub(crate) const DIALOG: &str = const_str::format!(
+    "block size-full inset-0 border-none bg-black/50 backdrop-blur p-16 z-10 [&:not(:target):not([open])]:hidden"
+);
+
+pub(crate) const ARTICLE: &str =
+    "flex flex-col gap-4 p-4 mx-auto max-w-screen-sm bg-white rounded dark:text-white dark:bg-slate-900";

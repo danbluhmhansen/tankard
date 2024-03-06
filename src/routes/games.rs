@@ -17,9 +17,9 @@ use strum::Display;
 use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt};
 
 use crate::{
-    auth::{self},
+    auth,
     commands::Command,
-    components::boost,
+    components::{boost, ARTICLE, BTN, BTN_ERR, BTN_WARN, DIALOG},
     Queue,
 };
 
@@ -43,69 +43,87 @@ pub(crate) enum Submit {
 
 pub(crate) async fn page() -> Markup {
     html! {
-        section x-data="{ games: [], setGame: {} }" x-init="games = await fetch('/api/games').then(res => res.json())" {
-            dialog #(Submit::Save) {
-                article {
-                    header { h1 { "Add game" } }
-                    div {
-                        label {
+        section
+            x-data="{ games: [], setGame: {} }"
+            x-init="games = await fetch('/api/games').then(res => res.json())"
+            class="flex flex-col gap-4 items-center"
+        {
+            dialog #(Submit::Save) class=(DIALOG) {
+                article class=(ARTICLE) {
+                    header { h1 class="text-xl" { "Add game" } }
+                    div class="flex flex-col p-2" {
+                        label class="flex flex-col gap-2" {
                             span { "Name" }
-                            input type="text" name="name" required autofocus x-model="setGame.name";
+                            input
+                                type="text"
+                                name="name"
+                                required
+                                autofocus
+                                x-model="setGame.name"
+                                class="p-1 bg-transparent rounded border";
                         }
-                        label {
+                        label class="flex flex-col gap-2" {
                             span { "Description" }
-                            input type="textarea" name="description" x-model="setGame.description";
+                            input
+                                type="textarea"
+                                name="description"
+                                x-model="setGame.description"
+                                class="p-1 bg-transparent rounded border";
                         }
                     }
-                    footer {
-                        a href="#" hx-boost="false" { span.tabler-arrow-back; }
+                    footer class="flex gap-1 justify-end" {
+                        a href="#" hx-boost="false" class=(BTN) { span class="i-tabler-arrow-back size-6"; }
                         a
                             href="#"
                             hx-boost="false"
                             "@click"="if (!games.some(g => g.id === setGame.id)) games.push(setGame)"
-                        { span.tabler-plus; }
+                            class=(BTN)
+                        { span class="i-tabler-plus size-6"; }
                     }
                 }
             }
-            h1 { "Games" }
-            div {
-                div {}
-                table {
+            h1 class="text-xl" { "Games" }
+            div class="rounded bg-slate-100 min-w-80 dark:bg-slate-800" {
+                div class="flex flex-col p-2" {}
+                table class="w-full" {
                     colgroup { col width="1%"; col; }
                     thead {
-                        tr {
-                            th {
-                                div role="group" style="width: fit-content;gap: .25rem;padding: 0;" {
+                        tr class="border-b first:border-t border-slate-200 dark:border-slate-700" {
+                            th class="p-2 text-center" {
+                                div role="group" class="flex gap-1 w-fit" {
                                     button
                                         "@click"="Tankard.gamesSubmit(games)"
-                                    { span.tabler-check; }
+                                        class=(BTN)
+                                    { span class="i-tabler-check size-6"; }
                                     a
                                         href={"#" (Submit::Save)}
                                         hx-boost="false"
                                         "@click"="
                                             setGame = { id: crypto.randomUUID(), name: '', description: '', new: true }
                                         "
-                                    { span.tabler-plus; }
+                                        class=(BTN)
+                                    { span class="i-tabler-plus size-6"; }
                                 }
                             }
-                            th { "Name" }
+                            th class="p-2 text-center" { "Name" }
                         }
                     }
-                    tfoot { tr { td {} } }
+                    tfoot { tr { td class="p-2 text-center" {} } }
                     tbody {
                         template x-for="game in games" {
                             tr
                                 x-init="game.old = { ...game }"
-                                ":style"="
+                                ":class"="
                                     game.drop
-                                        ? { background: 'red' }
+                                        ? 'bg-red-500'
                                         : game.new
-                                            ? { background: 'green' }
-                                            : game.set && { background: 'orange' }
-                                " {
-                                td {
-                                    div role="group" style="width: fit-content;gap: .25rem;padding: 0;" {
-                                        button.tertiary
+                                            ? 'bg-green-500'
+                                            : game.set && 'bg-orange-500'"
+                                class="border-b border-slate-200 dark:border-slate-700"
+                            {
+                                td class="p-2 text-center" {
+                                    div role="group" class="flex gap-1 w-fit" {
+                                        button
                                             "@click"="
                                                 if (game.set) {
                                                     Object.assign(game, game.old);   
@@ -117,13 +135,25 @@ pub(crate) async fn page() -> Markup {
                                                     window.location.hash = 'save';
                                                 }
                                             "
-                                        { span ":class"="game.set ? 'tabler-arrow-back' : 'tabler-pencil'"; }
-                                        button.secondary "@click"="game.drop = !game.drop"
-                                        { span ":class"="game.drop ? 'tabler-arrow-back' : 'tabler-trash'"; }
+                                            class=(BTN_WARN)
+                                        {
+                                            span
+                                                ":class"="game.set ? 'i-tabler-arrow-back' : 'i-tabler-pencil'"
+                                                class="size-6";
+                                        }
+                                        button "@click"="game.drop = !game.drop" class=(BTN_ERR)
+                                        {
+                                            span
+                                                ":class"="game.drop ? 'i-tabler-arrow-back' : 'i-tabler-trash'"
+                                                class="size-6";
+                                        }
                                     }
                                 }
-                                td x-text="game.name" {}
+                                td x-text="game.name" class="p-2 text-center" {}
                             }
+                        }
+                        tr x-show="games.length === 0" class="border-b border-slate-200 dark:border-slate-700" {
+                            td colspan="9" class="p-2 text-center" { "No games..." }
                         }
                     }
                 }

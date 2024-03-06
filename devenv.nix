@@ -11,7 +11,8 @@
     pkgs.cargo-watch
     pkgs.bun
     pkgs.nodePackages.typescript-language-server
-    pkgs.grass-sass
+    pkgs.tailwindcss-language-server
+    pkgs.rustywind
   ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
     frameworks.CoreFoundation
     frameworks.Security
@@ -27,7 +28,7 @@
       modules/htmx.ts
   '';
   scripts.watch-style.exec = ''
-    watchexec --watch style grass --style=compressed style/_index.scss dist/site.css
+    bun tailwindcss --config style/tailwind.config.ts --input style/tailwind.css --output dist/site.css --watch
   '';
 
   scripts.db-init.exec = ''
@@ -60,7 +61,7 @@
   # https://devenv.sh/processes/
   processes.server.exec = "watch-server";
   processes.bundle.exec = "watch-bundle";
-  processes.style.exec = "watch-style";
+  # processes.style.exec = "watch-style";
 
   # https://devenv.sh/services/
   services.postgres = {

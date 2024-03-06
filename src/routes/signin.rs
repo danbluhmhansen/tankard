@@ -17,7 +17,10 @@ use pasetors::{claims::Claims, keys::SymmetricKey, local, version4::V4};
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use crate::{auth::CurrentUser, components::boost};
+use crate::{
+    auth::CurrentUser,
+    components::{boost, BTN},
+};
 
 use super::profile;
 
@@ -68,18 +71,18 @@ pub(crate) struct Path;
 
 pub(crate) fn page() -> Markup {
     html! {
-        section {
-            h1 { "Sign in" }
-            form method="post" {
-                label {
+        section class="flex flex-col gap-4 items-center" {
+            h1 class="text-xl" { "Sign in" }
+            form method="post" class="flex flex-col gap-4" {
+                label class="flex flex-col gap-2" {
                     span { "Username" }
-                    input type="text" name="username" required autofocus;
+                    input type="text" name="username" required autofocus class="p-1 bg-transparent rounded border";
                 }
-                label {
+                label class="flex flex-col gap-2" {
                     span { "Password" }
-                    input type="password" name="password" required;
+                    input type="password" name="password" required class="p-1 bg-transparent rounded border";
                 }
-                button type="submit" { "Sign in" }
+                button type="submit" class=(BTN) { "Sign up" }
             }
         }
     }
