@@ -90,11 +90,13 @@ pub(crate) async fn page() -> Markup {
                     thead {
                         tr class="border-b first:border-t border-slate-200 dark:border-slate-700" {
                             th class="p-2 text-center" {
-                                div role="group" class="flex gap-1 w-fit" {
-                                    button
-                                        "@click"="Tankard.gamesSubmit(games)"
-                                        class=(BTN)
-                                    { span class="i-tabler-check size-6"; }
+                                div
+                                    role="group"
+                                    class="flex w-fit *:rounded-none first:*:rounded-l last:*:rounded-r"
+                                {
+                                    button "@click"="Tankard.gamesSubmit(games)" class=(BTN) {
+                                        span class="i-tabler-check size-6";
+                                    }
                                     a
                                         href={"#" (Submit::Save)}
                                         hx-boost="false"
@@ -122,7 +124,7 @@ pub(crate) async fn page() -> Markup {
                                 class="border-b border-slate-200 dark:border-slate-700"
                             {
                                 td class="p-2 text-center" {
-                                    div role="group" class="flex gap-1 w-fit" {
+                                    div role="group" class="flex w-fit *:rounded-none first:*:rounded-l last:*:rounded-r" {
                                         button
                                             "@click"="
                                                 if (game.set) {
@@ -141,8 +143,7 @@ pub(crate) async fn page() -> Markup {
                                                 ":class"="game.set ? 'i-tabler-arrow-back' : 'i-tabler-pencil'"
                                                 class="size-6";
                                         }
-                                        button "@click"="game.drop = !game.drop" class=(BTN_ERR)
-                                        {
+                                        button "@click"="game.drop = !game.drop" class=(BTN_ERR) {
                                             span
                                                 ":class"="game.drop ? 'i-tabler-arrow-back' : 'i-tabler-trash'"
                                                 class="size-6";
