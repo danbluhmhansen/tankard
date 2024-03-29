@@ -1,7 +1,4 @@
 {
-  "name": "tankard",
-  "module": "index.ts",
-  "type": "module",
   "devDependencies": {
     "@egoist/tailwindcss-icons": "^1.7.4",
     "@iconify-json/tabler": "^1.1.106",

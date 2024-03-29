@@ -18,7 +18,7 @@ pub(crate) struct InitUser {
     pub(crate) password: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct InitGame {
     pub(crate) id: Uuid,
     pub(crate) user_id: Uuid,
@@ -119,7 +119,6 @@ impl AsyncConsumer for AppConsumer {
                     .await;
             }
             Ok((Command::DropGames(ids), _)) => {
-                println!("{ids:?}");
                 let _ = sqlx::query!("SELECT id FROM drop_games($1);", &ids)
                     .fetch_all(&self.pool)
                     .await;
