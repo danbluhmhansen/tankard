@@ -1,8 +1,6 @@
-# cargo
+.DS_Store
+.idea/
 /target
-
-# tankard
-app/dist/*
-
-# bun
-app/node_modules/
+*.iml
+**/*.rs.bk
+Cargo.lock
