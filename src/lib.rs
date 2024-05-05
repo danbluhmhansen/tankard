@@ -144,6 +144,97 @@ impl Aggregate for Last {
     }
 }
 
+#[pg_trigger]
+fn trg_ins<'a>(
+    trigger: &'a pgrx::PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
+    let tablename = trigger.table_name()?;
+    let tablename = &tablename[..tablename.len() - 1];
+
+    // TODO: handle unwrap
+    let mut new = trigger.new().map(|new| new.into_owned()).unwrap();
+    let id = new.get_by_name::<pgrx::Uuid>("id");
+
+    // TODO: handle unwrap
+    let id = Spi::get_one_with_args::<pgrx::Uuid>(
+        "select coalesce($1, gen_random_uuid());",
+        vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
+    )
+    .unwrap();
+
+    _ = new.set_by_name("id", id);
+
+    let ts = new.get_by_name::<pgrx::TimestampWithTimeZone>("added");
+
+    _ = Spi::run_with_args(
+        &format!("insert into {tablename}_streams values ($1) on conflict (id) do nothing;"),
+        Some(vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())]),
+    );
+    _ = Spi::run_with_args(
+        &format!("insert into {tablename}_events values ($1, $2, 'init', jsonb_strip_nulls(to_jsonb($3) - '{{id,added,updated}}'::text[]));"),
+        Some(vec![
+            (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
+            (PgBuiltInOids::UUIDOID.oid(), id.into_datum()),
+            (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum()),
+        ])
+    );
+
+    Ok(Some(new))
+}
+
+#[pg_trigger]
+fn trg_upd<'a>(
+    trigger: &'a pgrx::PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
+    let tablename = trigger.table_name()?;
+    let tablename = &tablename[..tablename.len() - 1];
+
+    // TODO: handle unwrap
+    let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>("select clock_timestamp();").unwrap();
+
+    let id = trigger
+        .new()
+        .and_then(|new| new.get_by_name::<pgrx::Uuid>("id").into_datum());
+
+    _ = Spi::run_with_args(
+        &format!(
+            "insert into {tablename}_events values ($1, $2, 'set', jsonb_diff(jsonb_strip_nulls(to_jsonb($3)), jsonb_strip_nulls(to_jsonb($4))));"
+        ),
+        Some(vec![
+            (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
+            (PgBuiltInOids::UUIDOID.oid(), id),
+            (PgBuiltInOids::RECORDOID.oid(), trigger.old().into_datum()),
+            (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum())
+        ]),
+    );
+
+    // TODO: handle unwrap
+    let mut new = trigger.new().map(|new| new.into_owned()).unwrap();
+    _ = new.set_by_name("updated", ts);
+    Ok(Some(new))
+}
+
+#[pg_trigger]
+fn trg_del<'a>(
+    trigger: &'a pgrx::PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
+    let tablename = trigger.table_name()?;
+    let tablename = &tablename[..tablename.len() - 1];
+
+    let id = trigger
+        .old()
+        .and_then(|old| old.get_by_name::<pgrx::Uuid>("id").into_datum());
+
+    _ = Spi::run_with_args(
+        &format!(
+            r#"insert into {tablename}_events (stream_id, name, data) values ($1, 'drop', '[{{"op":"replace","path":"","value":null}}]'::jsonb);"#
+        ),
+        Some(vec![(PgBuiltInOids::UUIDOID.oid(), id)]),
+    );
+
+    Ok(trigger.old())
+}
+
 #[pg_extern]
 fn migrate() -> Result<(), SpiError> {
     Spi::run("create extension if not exists pgcrypto;")?;
@@ -241,6 +332,62 @@ mod tests {
             )),
             data
         );
+    }
+
+    #[pg_test]
+    fn users_ts() {
+        _ = Spi::run("select migrate();");
+
+        _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "update users set username = 'bar' returning updated;",
+        )
+        .expect("user updated successfully");
+
+        let username = Spi::get_one_with_args::<&str>(
+            "select username from users_ts($1);",
+            vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
+        );
+
+        assert_eq!(Ok(Some("foo")), username);
+    }
+
+    #[pg_test]
+    fn users_ts_commit() {
+        _ = Spi::run("select migrate();");
+
+        _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "update users set username = 'bar' returning updated;",
+        )
+        .expect("user updated successfully");
+
+        _ = Spi::run_with_args(
+            "select * from users_ts_commit($1);",
+            Some(vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())]),
+        );
+        let username = Spi::get_one::<&str>("select username from users;");
+
+        assert_eq!(Ok(Some("foo")), username);
+    }
+
+    #[pg_test]
+    fn users_step() {
+        _ = Spi::run("select migrate();");
+
+        let id = Spi::get_one::<pgrx::Uuid>(
+            "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
+        )
+        .expect("user initialized successfully");
+        _ = Spi::run("update users set username = 'bar';");
+        _ = Spi::run("update users set username = 'baz';");
+
+        let count = Spi::get_one_with_args::<i64>(
+            "select count(*) from users_step($1, 1);",
+            vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
+        );
+
+        assert_eq!(Ok(Some(2)), count);
     }
 }
 
