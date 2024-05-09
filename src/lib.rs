@@ -171,12 +171,12 @@ fn trg_ins<'a>(
         Some(vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())]),
     );
     _ = Spi::run_with_args(
-        &format!("insert into {tablename}_events values ($1, $2, 'init', jsonb_strip_nulls(to_jsonb($3) - '{{id,added,updated}}'::text[]));"),
+        &format!("insert into {tablename}_events values ($1, $2, 'init', jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb($3) - '{{id,added,updated}}'::text[])))"),
         Some(vec![
             (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
             (PgBuiltInOids::UUIDOID.oid(), id.into_datum()),
             (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum()),
-        ])
+        ]),
     );
 
     Ok(Some(new))
@@ -263,7 +263,11 @@ mod tests {
 
         assert_eq!(user_id, stream_id);
         assert_eq!(
-            Some(serde_json::json!({ "username": "foo", "passhash": "", "salt": "" })),
+            Some(serde_json::json!([
+                { "op": "add", "path": "/passhash", "value": "" },
+                { "op": "add", "path": "/salt", "value": "" },
+                { "op": "add", "path": "/username", "value": "foo" },
+            ])),
             data.map(|d| d.0)
         );
     }
@@ -276,7 +280,7 @@ mod tests {
         _ = Spi::run("update users set username = 'bar';");
 
         let name = Spi::get_one::<&str>(
-            "select data ->> 'username' from user_events where name = 'init';",
+            "select data -> 2 ->> 'value' from user_events where name = 'init';",
         )
         .expect("user initialized successfully");
         let data = Spi::get_one::<pgrx::JsonB>("select data from user_events where name = 'set';")
@@ -319,7 +323,7 @@ mod tests {
         _ = Spi::run("delete from users;");
 
         let name = Spi::get_one::<&str>(
-            "select data ->> 'username' from user_events where name = 'init';",
+            "select data -> 2 ->> 'value' from user_events where name = 'init';",
         )
         .expect("user initialized successfully");
         let data = Spi::get_one::<pgrx::JsonB>("select data from user_events where name = 'drop';")
