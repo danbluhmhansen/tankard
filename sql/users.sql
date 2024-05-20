@@ -22,12 +22,25 @@ create or replace trigger trg_users_ins before insert on users for each row exec
 create or replace trigger trg_users_upd before update on users for each row execute function trg_upd();
 create or replace trigger trg_users_del before delete on users for each row execute function trg_del();
 
+create or replace view users_latest_snaps as
+select last(timestamp) as timestamp, stream_id, 'snap' as name, last(data) as data
+from users_events where name = 'snap' group by stream_id;
+
+create or replace view users_latest_events as
+select e.timestamp, e.stream_id, e.name, e.data
+from users_events e
+left join users_latest_snaps s on s.stream_id = e.stream_id
+where s is null or s.timestamp < e.timestamp;
+
+create or replace view users_snap_events as
+select * from (select * from users_latest_snaps union select * from users_latest_events) order by timestamp;
+
 create or replace function users_ts (ts timestamptz, id uuid default null) returns setof users language sql as $$
   select jsonb_populate_record(
     null::users,
     jsonb_build_object('id', stream_id, 'added', first(timestamp), 'updated', last(timestamp)) || jsonb_patch(data)
   )
-  from users_events
+  from users_snap_events
   where timestamp <= ts and (users_ts.id is null or stream_id = users_ts.id)
   group by stream_id;
 $$;
@@ -40,7 +53,7 @@ $$;
 
 create or replace function users_step (id uuid, step int) returns setof users_events language sql as $$
   with filter as (
-    select * from users_events where stream_id = id
+    select * from users_snap_events where stream_id = id
   )
   select * from filter limit (select count(*) - step from filter);
 $$;
@@ -58,15 +71,3 @@ create or replace function users_snap_commit (ts timestamptz, id uuid default nu
   insert into users_events select * from users_snap(ts, users_snap_commit.id) returning *;
 $$;
 
-create or replace view users_latest_snaps as
-select last(timestamp) as timestamp, stream_id, 'snap' as name, last(data) as data
-from users_events where name = 'snap' group by stream_id;
-
-create or replace view users_latest_events as
-select e.timestamp, e.stream_id, e.name, e.data
-from users_events e
-left join users_latest_snaps s on s.stream_id = e.stream_id
-where s is null or s.timestamp < e.timestamp;
-
-create or replace view users_snap_events as
-select * from (select * from users_latest_snaps union select * from users_latest_events) order by timestamp;
