@@ -149,7 +149,6 @@ fn trg_ins<'a>(
     trigger: &'a pgrx::PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
     let tablename = trigger.table_name()?;
-    let tablename = &tablename[..tablename.len() - 1];
 
     // TODO: handle unwrap
     let mut new = trigger.new().map(|new| new.into_owned()).unwrap();
@@ -187,7 +186,6 @@ fn trg_upd<'a>(
     trigger: &'a pgrx::PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
     let tablename = trigger.table_name()?;
-    let tablename = &tablename[..tablename.len() - 1];
 
     // TODO: handle unwrap
     let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>("select clock_timestamp();").unwrap();
@@ -219,7 +217,6 @@ fn trg_del<'a>(
     trigger: &'a pgrx::PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
     let tablename = trigger.table_name()?;
-    let tablename = &tablename[..tablename.len() - 1];
 
     let id = trigger
         .old()
@@ -241,7 +238,7 @@ mod tests {
     use pgrx::prelude::*;
 
     #[pg_test]
-    fn user_insert() {
+    fn users_insert() {
         _ = Spi::run(include_str!("../sql/users.sql"));
 
         let user_id = Spi::get_one::<pgrx::Uuid>(
@@ -249,7 +246,7 @@ mod tests {
         )
         .expect("user initialized successfully");
         let (stream_id, data) =
-            Spi::get_two::<pgrx::Uuid, pgrx::JsonB>("select stream_id, data from user_events;")
+            Spi::get_two::<pgrx::Uuid, pgrx::JsonB>("select stream_id, data from users_events;")
                 .expect("user initialized successfully");
 
         assert_eq!(user_id, stream_id);
@@ -264,17 +261,17 @@ mod tests {
     }
 
     #[pg_test]
-    fn user_update() {
+    fn users_update() {
         _ = Spi::run(include_str!("../sql/users.sql"));
 
         _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
         _ = Spi::run("update users set username = 'bar';");
 
         let name = Spi::get_one::<&str>(
-            "select data -> 2 ->> 'value' from user_events where name = 'init';",
+            "select data -> 2 ->> 'value' from users_events where name = 'init';",
         )
         .expect("user initialized successfully");
-        let data = Spi::get_one::<pgrx::JsonB>("select data from user_events where name = 'set';")
+        let data = Spi::get_one::<pgrx::JsonB>("select data from users_events where name = 'set';")
             .map(|opt| opt.map(|data| data.0));
 
         assert_eq!(Some("foo"), name);
@@ -287,14 +284,14 @@ mod tests {
     }
 
     #[pg_test]
-    fn user_update_set_null() {
+    fn users_update_set_null() {
         _ = Spi::run(include_str!("../sql/users.sql"));
 
         _ = Spi::run("insert into users (username, salt, passhash, email) values ('foo', '', '', 'foo@bar.com');");
         _ = Spi::run("update users set email = null;");
 
         let data = Spi::get_one::<pgrx::JsonB>(
-            "select data from user_events where name = 'set' order by timestamp desc;",
+            "select data from users_events where name = 'set' order by timestamp desc;",
         )
         .map(|opt| opt.map(|data| data.0));
 
@@ -307,18 +304,19 @@ mod tests {
     }
 
     #[pg_test]
-    fn user_delete() {
+    fn users_delete() {
         _ = Spi::run(include_str!("../sql/users.sql"));
 
         _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
         _ = Spi::run("delete from users;");
 
         let name = Spi::get_one::<&str>(
-            "select data -> 2 ->> 'value' from user_events where name = 'init';",
+            "select data -> 2 ->> 'value' from users_events where name = 'init';",
         )
         .expect("user initialized successfully");
-        let data = Spi::get_one::<pgrx::JsonB>("select data from user_events where name = 'drop';")
-            .map(|opt| opt.map(|data| data.0));
+        let data =
+            Spi::get_one::<pgrx::JsonB>("select data from users_events where name = 'drop';")
+                .map(|opt| opt.map(|data| data.0));
 
         assert_eq!(Some("foo"), name);
         assert_eq!(
@@ -425,11 +423,11 @@ mod tests {
 
         _ = Spi::run("update users set username = 'baz';");
 
-        let snap = Spi::get_one::<pgrx::JsonB>("select data from user_events offset 2 limit 1;")
+        let snap = Spi::get_one::<pgrx::JsonB>("select data from users_events offset 2 limit 1;")
             .map(|s| s.map(|s| s.0));
 
         let set_event =
-            Spi::get_one::<pgrx::JsonB>("select data from user_events offset 3 limit 1;")
+            Spi::get_one::<pgrx::JsonB>("select data from users_events offset 3 limit 1;")
                 .map(|s| s.map(|s| s.0));
 
         assert_eq!(
