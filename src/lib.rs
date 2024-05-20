@@ -1,4 +1,4 @@
-use pgrx::{pg_sys::panic::ErrorReportable, prelude::*, spi::SpiError};
+use pgrx::{pg_sys::panic::ErrorReportable, prelude::*};
 
 ::pgrx::pg_module_magic!();
 
@@ -235,15 +235,6 @@ fn trg_del<'a>(
     Ok(trigger.old())
 }
 
-#[pg_extern]
-fn migrate() -> Result<(), SpiError> {
-    Spi::run("create extension if not exists pgcrypto;")?;
-    Spi::run(include_str!("../sql/init.sql"))?;
-    Spi::run(include_str!("../sql/users.sql"))?;
-
-    Ok(())
-}
-
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
@@ -251,7 +242,7 @@ mod tests {
 
     #[pg_test]
     fn user_insert() {
-        _ = Spi::run("select migrate();");
+        _ = Spi::run(include_str!("../sql/users.sql"));
 
         let user_id = Spi::get_one::<pgrx::Uuid>(
             "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
@@ -274,7 +265,7 @@ mod tests {
 
     #[pg_test]
     fn user_update() {
-        _ = Spi::run("select migrate();");
+        _ = Spi::run(include_str!("../sql/users.sql"));
 
         _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
         _ = Spi::run("update users set username = 'bar';");
@@ -297,7 +288,7 @@ mod tests {
 
     #[pg_test]
     fn user_update_set_null() {
-        _ = Spi::run("select migrate();");
+        _ = Spi::run(include_str!("../sql/users.sql"));
 
         _ = Spi::run("insert into users (username, salt, passhash, email) values ('foo', '', '', 'foo@bar.com');");
         _ = Spi::run("update users set email = null;");
@@ -317,7 +308,7 @@ mod tests {
 
     #[pg_test]
     fn user_delete() {
-        _ = Spi::run("select migrate();");
+        _ = Spi::run(include_str!("../sql/users.sql"));
 
         _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
         _ = Spi::run("delete from users;");
@@ -340,13 +331,11 @@ mod tests {
 
     #[pg_test]
     fn users_ts() {
-        _ = Spi::run("select migrate();");
+        _ = Spi::run(include_str!("../sql/users.sql"));
 
-        _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
-        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
-            "update users set username = 'bar' returning updated;",
-        )
-        .expect("user updated successfully");
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>("insert into users (username, salt, passhash) values ('foo', '', '') returning updated;");
+        Spi::run("update users set username = 'bar' returning updated;")
+            .expect("user updated successfully");
 
         let username = Spi::get_one_with_args::<&str>(
             "select username from users_ts($1);",
@@ -358,13 +347,11 @@ mod tests {
 
     #[pg_test]
     fn users_ts_commit() {
-        _ = Spi::run("select migrate();");
+        _ = Spi::run(include_str!("../sql/users.sql"));
 
-        _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
-        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
-            "update users set username = 'bar' returning updated;",
-        )
-        .expect("user updated successfully");
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>("insert into users (username, salt, passhash) values ('foo', '', '') returning updated;");
+        Spi::run("update users set username = 'bar' returning updated;")
+            .expect("user updated successfully");
 
         _ = Spi::run_with_args(
             "select * from users_ts_commit($1);",
@@ -377,7 +364,7 @@ mod tests {
 
     #[pg_test]
     fn users_step() {
-        _ = Spi::run("select migrate();");
+        _ = Spi::run(include_str!("../sql/users.sql"));
 
         let id = Spi::get_one::<pgrx::Uuid>(
             "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
@@ -392,6 +379,115 @@ mod tests {
         );
 
         assert_eq!(Ok(Some(2)), count);
+    }
+
+    #[pg_test]
+    fn users_snap() {
+        _ = Spi::run(include_str!("../sql/users.sql"));
+
+        _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
+        _ = Spi::run("update users set username = 'bar';");
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "update users set username = 'baz' returning updated;",
+        )
+        .expect("user updated successfully");
+
+        let snap = Spi::get_one_with_args::<pgrx::JsonB>(
+            "select data from users_snap($1 + interval '1 microsecond');",
+            vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
+        )
+        .map(|s| s.map(|s| s.0));
+
+        assert_eq!(
+            Ok(Some(serde_json::json!([
+                { "op": "add", "path": "/passhash", "value": "" },
+                { "op": "add", "path": "/salt", "value": "" },
+                { "op": "add", "path": "/username", "value": "baz" },
+            ]))),
+            snap
+        );
+    }
+
+    #[pg_test]
+    fn users_snap_set() {
+        _ = Spi::run(include_str!("../sql/users.sql"));
+
+        _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "update users set username = 'bar' returning updated;",
+        )
+        .expect("user updated successfully");
+
+        _ = Spi::run_with_args(
+            "select data from users_snap_commit($1 + interval '1 microsecond');",
+            Some(vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())]),
+        );
+
+        _ = Spi::run("update users set username = 'baz';");
+
+        let snap = Spi::get_one::<pgrx::JsonB>("select data from user_events offset 2 limit 1;")
+            .map(|s| s.map(|s| s.0));
+
+        let set_event =
+            Spi::get_one::<pgrx::JsonB>("select data from user_events offset 3 limit 1;")
+                .map(|s| s.map(|s| s.0));
+
+        assert_eq!(
+            Ok(Some(serde_json::json!([
+                { "op": "add", "path": "/passhash", "value": "" },
+                { "op": "add", "path": "/salt", "value": "" },
+                { "op": "add", "path": "/username", "value": "bar" },
+            ]))),
+            snap
+        );
+
+        assert_eq!(
+            Ok(Some(serde_json::json!([
+                { "op": "replace", "path": "/username", "value": "baz" },
+            ]))),
+            set_event
+        );
+    }
+
+    #[pg_test]
+    fn users_snap_events() {
+        _ = Spi::run(include_str!("../sql/users.sql"));
+
+        _ = Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');");
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "update users set username = 'bar' returning updated;",
+        )
+        .expect("user updated successfully");
+
+        _ = Spi::run_with_args(
+            "select data from users_snap_commit($1 + interval '1 microsecond');",
+            Some(vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())]),
+        );
+
+        _ = Spi::run("update users set username = 'baz';");
+
+        let snap = Spi::get_one::<pgrx::JsonB>("select data from users_snap_events limit 1;")
+            .map(|s| s.map(|s| s.0));
+
+        let set_event =
+            Spi::get_one::<pgrx::JsonB>("select data from users_snap_events offset 1 limit 1;")
+                .map(|s| s.map(|s| s.0));
+
+        assert_eq!(
+            Ok(Some(serde_json::json!([
+                { "op": "add", "path": "/passhash", "value": "" },
+                { "op": "add", "path": "/salt", "value": "" },
+                { "op": "add", "path": "/username", "value": "bar" },
+            ]))),
+            snap
+        );
+
+        assert_eq!(
+            Ok(Some(serde_json::json!([
+                { "op": "replace", "path": "/username", "value": "baz" },
+            ]))),
+            set_event
+        );
     }
 }
 
