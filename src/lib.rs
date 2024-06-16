@@ -150,35 +150,37 @@ fn trg_ins<'a>(
 ) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
     let tablename = trigger.table_name()?;
 
-    // TODO: handle unwrap
-    let mut new = trigger.new().map(|new| new.into_owned()).unwrap();
-    let id = new.get_by_name::<pgrx::Uuid>("id");
+    if let Some(mut new) = trigger.new().map(|new| new.into_owned()) {
+        let id = new.get_by_name::<pgrx::Uuid>("id");
 
-    // TODO: handle unwrap
-    let id = Spi::get_one_with_args::<pgrx::Uuid>(
-        "select coalesce($1, gen_random_uuid());",
-        vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
-    )
-    .unwrap();
+        if let Ok(id) = Spi::get_one_with_args::<pgrx::Uuid>(
+            "select coalesce($1, gen_random_uuid());",
+            vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
+        ) {
+            _ = new.set_by_name("id", id);
 
-    _ = new.set_by_name("id", id);
+            let ts = new.get_by_name::<pgrx::TimestampWithTimeZone>("added");
 
-    let ts = new.get_by_name::<pgrx::TimestampWithTimeZone>("added");
+            let id = Spi::get_one_with_args::<pgrx::Uuid>(
+                &format!(
+                    "insert into {tablename}_streams ({tablename}_id) values ($1) on conflict ({tablename}_id) do nothing returning id;"
+                ),
+                vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
+            );
+            _ = Spi::run_with_args(
+                &format!("insert into {tablename}_events values ($1, $2, 'init', jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb($3) - '{{id,added,updated}}'::text[])))"),
+                Some(vec![
+                    (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
+                    (PgBuiltInOids::UUIDOID.oid(), id.into_datum()),
+                    (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum()),
+                ]),
+            );
+        }
 
-    _ = Spi::run_with_args(
-        &format!("insert into {tablename}_streams values ($1) on conflict (id) do nothing;"),
-        Some(vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())]),
-    );
-    _ = Spi::run_with_args(
-        &format!("insert into {tablename}_events values ($1, $2, 'init', jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb($3) - '{{id,added,updated}}'::text[])))"),
-        Some(vec![
-            (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
-            (PgBuiltInOids::UUIDOID.oid(), id.into_datum()),
-            (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum()),
-        ]),
-    );
-
-    Ok(Some(new))
+        Ok(Some(new))
+    } else {
+        Ok(None)
+    }
 }
 
 #[pg_trigger]
@@ -187,29 +189,37 @@ fn trg_upd<'a>(
 ) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
     let tablename = trigger.table_name()?;
 
-    // TODO: handle unwrap
-    let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>("select clock_timestamp();").unwrap();
+    if let Ok(Some(ts)) = Spi::get_one::<pgrx::TimestampWithTimeZone>("select clock_timestamp();") {
+        let id = trigger
+            .new()
+            .and_then(|new| new.get_by_name::<pgrx::Uuid>("id").into_datum());
 
-    let id = trigger
-        .new()
-        .and_then(|new| new.get_by_name::<pgrx::Uuid>("id").into_datum());
+        let id = Spi::get_one_with_args::<pgrx::Uuid>(
+            &format!("select id from {tablename}_streams where {tablename}_id = $1"),
+            vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
+        );
 
-    _ = Spi::run_with_args(
-        &format!(
-            "insert into {tablename}_events values ($1, $2, 'set', jsonb_diff(jsonb_strip_nulls(to_jsonb($3)), jsonb_strip_nulls(to_jsonb($4))));"
-        ),
-        Some(vec![
-            (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
-            (PgBuiltInOids::UUIDOID.oid(), id),
-            (PgBuiltInOids::RECORDOID.oid(), trigger.old().into_datum()),
-            (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum())
-        ]),
-    );
+        _ = Spi::run_with_args(
+            &format!(
+                "insert into {tablename}_events values ($1, $2, 'set', jsonb_diff(jsonb_strip_nulls(to_jsonb($3)), jsonb_strip_nulls(to_jsonb($4))));"
+            ),
+            Some(vec![
+                (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
+                (PgBuiltInOids::UUIDOID.oid(), id.into_datum()),
+                (PgBuiltInOids::RECORDOID.oid(), trigger.old().into_datum()),
+                (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum())
+            ]),
+        );
 
-    // TODO: handle unwrap
-    let mut new = trigger.new().map(|new| new.into_owned()).unwrap();
-    _ = new.set_by_name("updated", ts);
-    Ok(Some(new))
+        if let Some(mut new) = trigger.new().map(|new| new.into_owned()) {
+            _ = new.set_by_name("updated", ts);
+            Ok(Some(new))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 #[pg_trigger]
@@ -222,11 +232,16 @@ fn trg_del<'a>(
         .old()
         .and_then(|old| old.get_by_name::<pgrx::Uuid>("id").into_datum());
 
+    let id = Spi::get_one_with_args::<pgrx::Uuid>(
+        &format!("select id from {tablename}_streams where {tablename}_id = $1"),
+        vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
+    );
+
     _ = Spi::run_with_args(
         &format!(
             r#"insert into {tablename}_events (stream_id, name, data) values ($1, 'drop', '[{{"op":"replace","path":"","value":null}}]'::jsonb);"#
         ),
-        Some(vec![(PgBuiltInOids::UUIDOID.oid(), id)]),
+        Some(vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())]),
     );
 
     Ok(trigger.old())
@@ -243,20 +258,18 @@ mod tests {
 
         let user_id = Spi::get_one::<pgrx::Uuid>(
             "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
-        )
-        .expect("user initialized successfully");
-        let (stream_id, data) =
-            Spi::get_two::<pgrx::Uuid, pgrx::JsonB>("select stream_id, data from users_events;")
-                .expect("user initialized successfully");
+        );
+        let stream_user_id = Spi::get_one::<pgrx::Uuid>("select users_id from users_streams;");
+        let data = Spi::get_one::<pgrx::JsonB>("select data from users_events;");
 
-        assert_eq!(user_id, stream_id);
+        assert_eq!(user_id, stream_user_id);
         assert_eq!(
-            Some(serde_json::json!([
+            Ok(Some(serde_json::json!([
                 { "op": "add", "path": "/passhash", "value": "" },
                 { "op": "add", "path": "/salt", "value": "" },
                 { "op": "add", "path": "/username", "value": "foo" },
-            ])),
-            data.map(|d| d.0)
+            ]))),
+            data.map(|d| d.map(|d| d.0))
         );
     }
 

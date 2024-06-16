@@ -1,4 +1,19 @@
-create table users_streams ("id" uuid not null default gen_random_uuid() primary key);
+create table users (
+  "id"       uuid        not null primary key,
+  "added"    timestamptz not null default clock_timestamp(),
+  "updated"  timestamptz not null default clock_timestamp(),
+  "username" text        not null,
+  "salt"     text        not null,
+  "passhash" text        not null,
+  "email"    text        null
+);
+
+create table users_streams (
+  "id"       uuid not null default gen_random_uuid() primary key,
+  "users_id" uuid not null
+);
+
+create unique index on users_streams ("users_id");
 
 create table users_events (
   "timestamp" timestamptz not null default clock_timestamp(),
@@ -6,16 +21,6 @@ create table users_events (
   "name"      text        not null,
   "data"      jsonb       null,
   primary key ("stream_id", "timestamp")
-);
-
-create table users (
-  "id"       uuid        not null primary key references users_streams ("id") on delete cascade,
-  "added"    timestamptz not null default clock_timestamp(),
-  "updated"  timestamptz not null default clock_timestamp(),
-  "username" text        not null,
-  "salt"     text        not null,
-  "passhash" text        not null,
-  "email"    text        null
 );
 
 create or replace trigger trg_users_ins before insert on users for each row execute function trg_ins();
@@ -38,11 +43,15 @@ select * from (select * from users_latest_snaps union select * from users_latest
 create or replace function users_ts (ts timestamptz, id uuid default null) returns setof users language sql as $$
   select jsonb_populate_record(
     null::users,
-    jsonb_build_object('id', stream_id, 'added', first(timestamp), 'updated', last(timestamp)) || jsonb_patch(data)
+    jsonb_build_object(
+      'id', s.users_id,
+      'added', first(timestamp order by timestamp),
+      'updated', last(timestamp order by timestamp)) || jsonb_patch(data order by timestamp)
   )
-  from users_snap_events
-  where timestamp <= ts and (users_ts.id is null or stream_id = users_ts.id)
-  group by stream_id;
+  from users_snap_events e
+  join users_streams s on s.id = e.stream_id
+  where timestamp <= ts and (users_ts.id is null or s.users_id = users_ts.id)
+  group by s.users_id;
 $$;
 
 create or replace function users_ts_commit (ts timestamptz, id uuid default null) returns setof users language sql as $$
@@ -53,7 +62,10 @@ $$;
 
 create or replace function users_step (id uuid, step int) returns setof users_events language sql as $$
   with filter as (
-    select * from users_snap_events where stream_id = id
+    select e.*
+    from users_snap_events e
+    join users_streams s on s.id = e.stream_id
+    where s.users_id = users_step.id
   )
   select * from filter limit (select count(*) - step from filter);
 $$;
@@ -61,10 +73,11 @@ $$;
 create or replace function users_snap (ts timestamptz, id uuid default null) returns setof users_events language sql as $$
   select
     ts as timestamp,
-    snap.id as stream_id,
+    s.id as stream_id,
     'snap' as name,
     jsonb_diff('{}'::jsonb, jsonb_strip_nulls(to_jsonb(snap) - '{id,added,updated}'::text[])) as data
-  from users_ts(ts, users_snap.id) snap;
+  from users_ts(ts, users_snap.id) snap
+  join users_streams s on s.users_id = snap.id;
 $$;
 
 create or replace function users_snap_commit (ts timestamptz, id uuid default null) returns setof users_events language sql as $$
