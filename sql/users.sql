@@ -36,7 +36,11 @@ begin
 
   sql_query := format(E'
     with streams as (
-      select gen_random_uuid() as id, %s, jsonb_diff(\'{}\'::jsonb, jsonb_strip_nulls(to_jsonb(newtab) - \'{%s,added,updated}\'::text[])) as data from newtab
+      select
+        gen_random_uuid() as id,
+        %s,
+        jsonb_diff(\'{}\'::jsonb, jsonb_strip_nulls(to_jsonb(newtab) - \'{%s,added,updated}\'::text[])) as data
+      from newtab
     ), a as (
       insert into %s_streams select id, %s from streams returning id
     )
@@ -49,9 +53,60 @@ begin
 end;
 $$;
 
-create or replace trigger trg_users_foo after insert on users referencing new table as newtab execute function trg_ins('id');
-create or replace trigger trg_users_upd before update on users for each row execute function trg_upd();
-create or replace trigger trg_users_del before delete on users for each row execute function trg_del();
+create or replace function trg_upd () returns trigger language plpgsql as $$
+declare
+  keys text;
+  stream_keys text;
+  ts_keys text;
+  sql_query text;
+  ts_query text;
+begin
+  keys := array_to_string(tg_argv, ',');
+  select array_to_string(array_agg(format('s.%s_%s = n.%s', tg_table_name, element, element)), ' and') into stream_keys from unnest(tg_argv) as t(element);
+  select array_to_string(array_agg(format('%s in (select %s from newtab)', element, element)), ' and') into ts_keys from unnest(tg_argv) as t(element);
+
+  sql_query := format(E'
+    insert into %s_events (stream_id, name, data)
+    select s.id, \'set\', jsonb_diff(jsonb_strip_nulls(to_jsonb(o)), jsonb_strip_nulls(to_jsonb(n)))
+    from newtab n
+    join oldtab o using (%s)
+    join %s_streams s on %s;
+  ', tg_table_name, keys, tg_table_name, stream_keys);
+
+  execute sql_query;
+
+  ts_query := format(E'update %s set updated = now() where %s;', tg_table_name, ts_keys);
+  execute ts_query;
+
+  return null;
+end;
+$$;
+
+create or replace function trg_del () returns trigger language plpgsql as $$
+declare
+  stream_keys text;
+  sql_query text;
+begin
+  select array_to_string(array_agg(format('s.%s_%s = o.%s', tg_table_name, element, element)), ' and') into stream_keys from unnest(tg_argv) as t(element);
+
+  sql_query := format(E'
+    insert into %s_events (stream_id, name, data)
+    select s.id, \'drop\', \'[{"op":"replace","path":"","value":null}]\'
+    from oldtab o join %s_streams s on %s;
+  ', tg_table_name, tg_table_name, stream_keys);
+
+  execute sql_query;
+
+  return null;
+end;
+$$;
+
+create or replace trigger trg_users_ins after insert on users referencing new table as newtab execute function trg_ins('id');
+create or replace trigger trg_users_upd after update on users
+  referencing old table as oldtab new table as newtab
+  when (pg_trigger_depth() < 1)
+  execute function trg_upd('id');
+create or replace trigger trg_users_del after delete on users referencing old table as oldtab execute function trg_del('id');
 
 create or replace view users_latest_snaps as
 select last(timestamp) as timestamp, stream_id, 'snap' as name, last(data) as data
