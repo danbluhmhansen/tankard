@@ -145,45 +145,6 @@ impl Aggregate for Last {
 }
 
 #[pg_trigger]
-fn trg_ins<'a>(
-    trigger: &'a pgrx::PgTrigger<'a>,
-) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
-    let tablename = trigger.table_name()?;
-
-    if let Some(mut new) = trigger.new().map(|new| new.into_owned()) {
-        let id = new.get_by_name::<pgrx::Uuid>("id");
-
-        if let Ok(id) = Spi::get_one_with_args::<pgrx::Uuid>(
-            "select coalesce($1, gen_random_uuid());",
-            vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
-        ) {
-            _ = new.set_by_name("id", id);
-
-            let ts = new.get_by_name::<pgrx::TimestampWithTimeZone>("added");
-
-            let id = Spi::get_one_with_args::<pgrx::Uuid>(
-                &format!(
-                    "insert into {tablename}_streams ({tablename}_id) values ($1) on conflict ({tablename}_id) do nothing returning id;"
-                ),
-                vec![(PgBuiltInOids::UUIDOID.oid(), id.into_datum())],
-            );
-            _ = Spi::run_with_args(
-                &format!("insert into {tablename}_events values ($1, $2, 'init', jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb($3) - '{{id,added,updated}}'::text[])))"),
-                Some(vec![
-                    (PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum()),
-                    (PgBuiltInOids::UUIDOID.oid(), id.into_datum()),
-                    (PgBuiltInOids::RECORDOID.oid(), trigger.new().into_datum()),
-                ]),
-            );
-        }
-
-        Ok(Some(new))
-    } else {
-        Ok(None)
-    }
-}
-
-#[pg_trigger]
 fn trg_upd<'a>(
     trigger: &'a pgrx::PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, impl WhoAllocated>>, pgrx::PgTriggerError> {
@@ -253,24 +214,29 @@ mod tests {
     use pgrx::prelude::*;
 
     #[pg_test]
-    fn users_insert() {
-        _ = Spi::run(include_str!("../sql/users.sql"));
+    fn users_insert() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
 
         let user_id = Spi::get_one::<pgrx::Uuid>(
             "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
         );
-        let stream_user_id = Spi::get_one::<pgrx::Uuid>("select users_id from users_streams;");
-        let data = Spi::get_one::<pgrx::JsonB>("select data from users_events;");
 
-        assert_eq!(user_id, stream_user_id);
+        assert_eq!(
+            user_id,
+            Spi::get_one("select users_id from users_streams;"),
+            "generated user id should match the stream id"
+        );
         assert_eq!(
             Ok(Some(serde_json::json!([
                 { "op": "add", "path": "/passhash", "value": "" },
                 { "op": "add", "path": "/salt", "value": "" },
                 { "op": "add", "path": "/username", "value": "foo" },
             ]))),
-            data.map(|d| d.map(|d| d.0))
+            Spi::get_one::<pgrx::JsonB>("select data from users_events;").map(|d| d.map(|d| d.0)),
+            "inserted user data should match the json patch data in the event"
         );
+
+        Ok(())
     }
 
     #[pg_test]

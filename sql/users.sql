@@ -1,7 +1,7 @@
 create table users (
-  "id"       uuid        not null primary key,
-  "added"    timestamptz not null default clock_timestamp(),
-  "updated"  timestamptz not null default clock_timestamp(),
+  "id"       uuid        not null default gen_random_uuid() primary key,
+  "added"    timestamptz not null default now(),
+  "updated"  timestamptz not null default now(),
   "username" text        not null,
   "salt"     text        not null,
   "passhash" text        not null,
@@ -16,14 +16,40 @@ create table users_streams (
 create unique index on users_streams ("users_id");
 
 create table users_events (
-  "timestamp" timestamptz not null default clock_timestamp(),
+  "timestamp" timestamptz not null default now(),
   "stream_id" uuid        not null references users_streams ("id") on delete cascade,
   "name"      text        not null,
   "data"      jsonb       null,
   primary key ("stream_id", "timestamp")
 );
 
-create or replace trigger trg_users_ins before insert on users for each row execute function trg_ins();
+create or replace function trg_ins () returns trigger language plpgsql as $$
+declare
+  keys text;
+  stream_keys text;
+  aliases text;
+  sql_query text;
+begin
+  keys := array_to_string(tg_argv, ',');
+  select array_to_string(array_agg(tg_table_name || '_' || element), ',') into stream_keys from unnest(tg_argv) as t(element);
+  select array_to_string(array_agg(element || ' as ' || tg_table_name || '_' || element), ',') into aliases from unnest(tg_argv) as t(element);
+
+  sql_query := format(E'
+    with streams as (
+      select gen_random_uuid() as id, %s, jsonb_diff(\'{}\'::jsonb, jsonb_strip_nulls(to_jsonb(newtab) - \'{%s,added,updated}\'::text[])) as data from newtab
+    ), a as (
+      insert into %s_streams select id, %s from streams returning id
+    )
+    insert into %s_events (stream_id, name, data) select id, \'init\', data from streams;
+  ', aliases, keys, tg_table_name, stream_keys, tg_table_name);
+
+  execute sql_query;
+
+  return null;
+end;
+$$;
+
+create or replace trigger trg_users_foo after insert on users referencing new table as newtab execute function trg_ins('id');
 create or replace trigger trg_users_upd before update on users for each row execute function trg_upd();
 create or replace trigger trg_users_del before delete on users for each row execute function trg_del();
 
@@ -40,7 +66,7 @@ where s is null or s.timestamp < e.timestamp;
 create or replace view users_snap_events as
 select * from (select * from users_latest_snaps union select * from users_latest_events) order by timestamp;
 
-create or replace function users_ts (ts timestamptz, id uuid default null) returns setof users language sql as $$
+create or replace function users_ts (ts timestamptz default now(), id uuid default null) returns setof users language sql as $$
   select jsonb_populate_record(
     null::users,
     jsonb_build_object(
@@ -54,7 +80,7 @@ create or replace function users_ts (ts timestamptz, id uuid default null) retur
   group by s.users_id;
 $$;
 
-create or replace function users_ts_commit (ts timestamptz, id uuid default null) returns setof users language sql as $$
+create or replace function users_ts_commit (ts timestamptz default now(), id uuid default null) returns setof users language sql as $$
   update users set (username, salt, passhash, email) = (
     select username, salt, passhash, email from users_ts(ts, users_ts_commit.id) where users.id = users_ts.id
   ) returning *;
@@ -70,7 +96,7 @@ create or replace function users_step (id uuid, step int) returns setof users_ev
   select * from filter limit (select count(*) - step from filter);
 $$;
 
-create or replace function users_snap (ts timestamptz, id uuid default null) returns setof users_events language sql as $$
+create or replace function users_snap (ts timestamptz default now(), id uuid default null) returns setof users_events language sql as $$
   select
     ts as timestamp,
     s.id as stream_id,
@@ -80,7 +106,7 @@ create or replace function users_snap (ts timestamptz, id uuid default null) ret
   join users_streams s on s.users_id = snap.id;
 $$;
 
-create or replace function users_snap_commit (ts timestamptz, id uuid default null) returns setof users_events language sql as $$
+create or replace function users_snap_commit (ts timestamptz default now(), id uuid default null) returns setof users_events language sql as $$
   insert into users_events select * from users_snap(ts, users_snap_commit.id) returning *;
 $$;
 
