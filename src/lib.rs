@@ -239,7 +239,7 @@ impl<'a> PgTable<'a> {
             .iter()
             .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name} = new.{name}"))
             .collect::<Vec<_>>()
-            .join(" and")
+            .join(" and ")
     }
 
     fn delete_trigger_filter(&self) -> String {
@@ -248,7 +248,7 @@ impl<'a> PgTable<'a> {
             .iter()
             .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name} = old.{name}"))
             .collect::<Vec<_>>()
-            .join(" and")
+            .join(" and ")
     }
 
     fn create_tables(&self) -> Result<(), spi::Error> {
@@ -391,7 +391,7 @@ impl<'a> PgTable<'a> {
             .iter()
             .map(|&PgColumn { name, data_type: _ }| format!("s.{table}_{name} = sn.{name}"))
             .collect::<Vec<_>>()
-            .join(" and");
+            .join(" and ");
         let columns = self
             .columns
             .iter()
@@ -451,7 +451,7 @@ impl<'a> PgTable<'a> {
             create or replace function {table}_commit (commits {table}[]) returns setof {table} language sql as $$
               with nest as (select * from unnest(commits))
               insert into {table} select {keys}, added, clock_timestamp() as updated, {columns} from nest
-              on conflict (id) do update set (updated, {columns}) =
+              on conflict ({keys}) do update set (updated, {columns}) =
                 (select clock_timestamp() as updated, {columns} from nest)
               returning *;
             $$;
@@ -817,6 +817,13 @@ mod tests {
             snap_data.map(|data| data.0),
             "snapped user data should match the json patch data in the snap"
         );
+
+        Ok(())
+    }
+
+    #[pg_test]
+    fn composite_keys() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/composite_keys.sql"))?;
 
         Ok(())
     }
