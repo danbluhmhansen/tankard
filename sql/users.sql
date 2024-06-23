@@ -17,9 +17,17 @@ create unique index on users_streams ("users_id");
 
 create table users_events (
   "timestamp" timestamptz not null default clock_timestamp(),
-  "stream_id" uuid        not null references users_streams ("id") on delete cascade,
-  "data"      jsonb       null,
+  "stream_id" uuid        not null references users_streams ("id"),
+  "data"      jsonb       not null,
   primary key ("stream_id", "timestamp")
+);
+
+create table users_snaps (
+  "timestamp" timestamptz not null,
+  "stream_id" uuid        not null references users_streams ("id"),
+  "data"      jsonb       not null,
+  primary key ("stream_id", "timestamp"),
+  foreign key ("stream_id", "timestamp") references users_events ("stream_id", "timestamp")
 );
 
 create or replace function trg_users_ins () returns trigger language plpgsql as $$
@@ -101,10 +109,16 @@ create or replace function users_step (step int default 1) returns setof users l
   group by id;
 $$;
 
-create or replace function users_commit (commit users[]) returns setof users language sql as $$
-  with nest as (select * from unnest(commit))
+create or replace function users_commit (commits users[]) returns setof users language sql as $$
+  with nest as (select * from unnest(commits))
   insert into users select id, added, clock_timestamp() as updated, username, salt, passhash, email from nest
   on conflict (id) do update set (updated, username, salt, passhash, email) =
     (select clock_timestamp() as updated, username, salt, passhash, email from nest)
   returning *;
+$$;
+
+create or replace function users_snaps_commit (snaps users[]) returns setof users_snaps language sql as $$
+  insert into users_snaps
+  select sn.updated, s.id, jsonb_diff('{}'::jsonb, jsonb_strip_nulls(to_jsonb(sn) - '{id,added,updated}'::text[]))
+  from unnest(snaps) sn join users_streams s on s.users_id = sn.id returning *;
 $$;
