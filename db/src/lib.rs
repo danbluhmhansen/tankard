@@ -2,6 +2,7 @@
 
 mod event_source;
 mod first_last;
+mod html;
 mod json;
 mod users;
 

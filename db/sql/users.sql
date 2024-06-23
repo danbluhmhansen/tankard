@@ -7,5 +7,3 @@ create table users (
   "passhash" text        not null,
   "email"    text        null
 );
-
-select init_event_source('users');

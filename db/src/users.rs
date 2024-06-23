@@ -6,6 +6,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_insert() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let (user_id, user_ts, username) = Spi::get_three::<pgrx::Uuid, pgrx::TimestampWithTimeZone, &str>(
             "insert into users (username, salt, passhash) values ('foo', '', '') returning id, updated, username;",
@@ -50,6 +51,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_update() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');")?;
         let (user_ts, username) = Spi::get_two::<pgrx::TimestampWithTimeZone, &str>(
@@ -79,6 +81,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_update_set_null() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         Spi::run("insert into users (username, salt, passhash, email) values ('foo', '', '', 'foo@bar.com');")?;
         let user_ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
@@ -108,6 +111,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_delete() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         Spi::run("insert into users (username, salt, passhash) values ('foo', '', '');")?;
         Spi::run("delete from users;")?;
@@ -126,6 +130,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_ts() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let insert =
             Spi::get_three::<pgrx::TimestampWithTimeZone, pgrx::TimestampWithTimeZone, &str>(
@@ -153,6 +158,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_ts_deleted() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let insert =
             Spi::get_three::<pgrx::TimestampWithTimeZone, pgrx::TimestampWithTimeZone, &str>(
@@ -180,6 +186,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_step() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let insert =
             Spi::get_three::<pgrx::TimestampWithTimeZone, pgrx::TimestampWithTimeZone, &str>(
@@ -202,6 +209,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_ts_commit() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let (ts, username) =
             Spi::get_two::<pgrx::TimestampWithTimeZone, &str>(
@@ -237,6 +245,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_ts_commit_deleted() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let (ts, username) =
             Spi::get_two::<pgrx::TimestampWithTimeZone, &str>(
@@ -274,6 +283,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_step_commit() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let username =
             Spi::get_one::<&str>(
@@ -308,6 +318,7 @@ pub(crate) mod tests {
     #[pg_test]
     fn users_snaps() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
 
         let (ts, username) =
             Spi::get_two::<pgrx::TimestampWithTimeZone, &str>(
