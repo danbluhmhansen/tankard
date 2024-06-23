@@ -154,7 +154,7 @@ mod tests {
         Spi::run(include_str!("../sql/users.sql"))?;
 
         let (user_id, user_ts, username) = Spi::get_three::<pgrx::Uuid, pgrx::TimestampWithTimeZone, &str>(
-            "insert into users (username, salt, passhash) values ('foo', '', '') returning id, added, username;",
+            "insert into users (username, salt, passhash) values ('foo', '', '') returning id, updated, username;",
         )?;
 
         let (stream_id, stream_user_id) =
@@ -324,17 +324,39 @@ mod tests {
     }
 
     #[pg_test]
+    fn users_step() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+
+        let insert =
+            Spi::get_three::<pgrx::TimestampWithTimeZone, pgrx::TimestampWithTimeZone, &str>(
+                "insert into users (username, salt, passhash) values ('foo', '', '') returning added, updated, username;"
+            )?;
+        Spi::run("update users set username = 'bar';")?;
+
+        let ts = Spi::get_three::<pgrx::TimestampWithTimeZone, pgrx::TimestampWithTimeZone, &str>(
+            "select added, updated, username from users_step();",
+        )?;
+
+        assert_eq!(
+            insert, ts,
+            "user fetched from insert timestamp should match originally inserted user"
+        );
+
+        Ok(())
+    }
+
+    #[pg_test]
     fn users_ts_commit() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
 
         let (ts, username) =
             Spi::get_two::<pgrx::TimestampWithTimeZone, &str>(
-                "insert into users (username, salt, passhash) values ('foo', '', '') returning added, username;"
+                "insert into users (username, salt, passhash) values ('foo', '', '') returning updated, username;"
             )?;
         Spi::run("update users set username = 'bar';")?;
 
         let updated = Spi::get_one_with_args::<pgrx::TimestampWithTimeZone>(
-            "select updated from users_ts_commit($1);",
+            "select (users_commit).updated from (select users_commit(array_agg) from (select array_agg(users_ts) from users_ts($1)));",
             vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
         )?;
 
@@ -364,12 +386,12 @@ mod tests {
 
         let (ts, username) =
             Spi::get_two::<pgrx::TimestampWithTimeZone, &str>(
-                "insert into users (username, salt, passhash) values ('foo', '', '') returning added, username;"
+                "insert into users (username, salt, passhash) values ('foo', '', '') returning updated, username;"
             )?;
         Spi::run("delete from users;")?;
 
         let updated = Spi::get_one_with_args::<pgrx::TimestampWithTimeZone>(
-            "select updated from users_ts_commit($1);",
+            "select (users_commit).updated from (select users_commit(array_agg) from (select array_agg(users_ts) from users_ts($1)));",
             vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
         )?;
 
@@ -387,6 +409,40 @@ mod tests {
                 { "op": "add", "path": "/passhash", "value": "" },
                 { "op": "add", "path": "/salt", "value": "" },
                 { "op": "add", "path": "/username", "value": username },
+            ])),
+            event_data.map(|data| data.0),
+            "commited user data should match the json patch data in the event"
+        );
+
+        Ok(())
+    }
+
+    #[pg_test]
+    fn users_step_commit() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+
+        let username =
+            Spi::get_one::<&str>(
+                "insert into users (username, salt, passhash) values ('foo', '', '') returning username;"
+            )?;
+        Spi::run("update users set username = 'bar';")?;
+
+        let updated = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "select (users_commit).updated from (select users_commit(array_agg) from (select array_agg(users_step) from users_step()));",
+        )?;
+
+        let (event_ts, event_data) = Spi::get_two::<pgrx::TimestampWithTimeZone, pgrx::JsonB>(
+            "select timestamp, data from users_events offset 2;",
+        )?;
+
+        assert_eq!(
+            updated, event_ts,
+            "commited user timestamp should match event timestamp"
+        );
+
+        assert_eq!(
+            Some(serde_json::json!([
+                { "op": "replace", "path": "/username", "value": username },
             ])),
             event_data.map(|data| data.0),
             "commited user data should match the json patch data in the event"

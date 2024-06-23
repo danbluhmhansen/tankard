@@ -62,7 +62,7 @@ create or replace trigger trg_users_ins after insert on users for each row execu
 create or replace trigger trg_users_upd before update on users for each row execute function trg_users_upd();
 create or replace trigger trg_users_del before delete on users for each row execute function trg_users_del();
 
-create or replace function users_ts (ts timestamptz default now(), id uuid default null) returns setof users language sql as $$
+create or replace function users_ts (ts timestamptz default now()) returns setof users language sql as $$
   select jsonb_populate_record(
     null::users,
     jsonb_build_object(
@@ -73,14 +73,38 @@ create or replace function users_ts (ts timestamptz default now(), id uuid defau
   )
   from users_events e
   join users_streams s on s.id = e.stream_id
-  where timestamp <= ts and (users_ts.id is null or s.users_id = users_ts.id)
+  where timestamp <= ts
   group by s.users_id;
 $$;
 
-create or replace function users_ts_commit (ts timestamptz default now(), id uuid default null) returns setof users language sql as $$
-  with ts as (select * from users_ts(ts, users_ts_commit.id))
-  insert into users select id, added, clock_timestamp() as updated, username, salt, passhash, email from ts
+create or replace function users_step (step int default 1) returns setof users language sql as $$
+  with ranked_data as (
+    select
+      s.users_id as id,
+      timestamp,
+      data,
+      row_number() over (partition by s.users_id) as row_num,
+      count(*) over (partition by s.users_id) as row_sum
+    from users_events e
+    join users_streams s on s.id = e.stream_id
+  )
+  select jsonb_populate_record(
+    null::users,
+    jsonb_build_object(
+      'id', id,
+      'added', first(timestamp order by timestamp),
+      'updated', last(timestamp order by timestamp)
+    ) || jsonb_patch(data order by timestamp)
+  )
+  from ranked_data
+  where row_num <= row_sum - step
+  group by id;
+$$;
+
+create or replace function users_commit (commit users[]) returns setof users language sql as $$
+  with nest as (select * from unnest(commit))
+  insert into users select id, added, clock_timestamp() as updated, username, salt, passhash, email from nest
   on conflict (id) do update set (updated, username, salt, passhash, email) =
-    (select clock_timestamp() as updated, username, salt, passhash, email from ts)
+    (select clock_timestamp() as updated, username, salt, passhash, email from nest)
   returning *;
 $$;
