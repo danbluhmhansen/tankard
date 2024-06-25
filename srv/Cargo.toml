@@ -1,0 +1,16 @@
+[package]
+name = "tankard_srv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7.5"
+axum-extra = { version = "0.9.3", features = ["typed-routing"] }
+axum-htmx = "0.6.0"
+sqlx = { version = "0.7.4", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+tokio = { version = "1.38.0", features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+http-body-util = "0.1.2"
+scraper = "0.19.0"
+tower = { version = "0.4.13", features = ["util"] }
