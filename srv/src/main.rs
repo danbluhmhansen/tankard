@@ -1,6 +1,13 @@
 use std::{error::Error, time::Duration};
 
-use axum::{extract::State, http::StatusCode, response::Html, routing::get, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{Html, IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
+use axum_extra::TypedHeader;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::net::TcpListener;
 
@@ -12,20 +19,51 @@ where
 }
 
 async fn index(State(pool): State<PgPool>) -> Result<Html<String>, (StatusCode, String)> {
-    sqlx::query_scalar("select html_minify(html(html_users()));")
+    sqlx::query_scalar("select html_minify(html_index());")
         .fetch_one(&pool)
         .await
         .map(Html)
         .map_err(internal_error)
 }
 
+async fn users(
+    accept: Option<TypedHeader<headers_accept::Accept>>,
+    State(pool): State<PgPool>,
+) -> Response {
+    match accept {
+        Some(TypedHeader(accept))
+            if accept
+                .media_types()
+                .any(|mt| mt.essence().to_string() == "application/json") =>
+        {
+            sqlx::query_scalar!(
+                "select jsonb_agg(jsonb_build_object('username', username)) from users;"
+            )
+            .fetch_one(&pool)
+            .await
+            .map(Json)
+            .map_err(internal_error)
+            .into_response()
+        }
+        _ => sqlx::query_scalar!("select html_minify(html_users());")
+            .fetch_one(&pool)
+            .await
+            .map(|html| Html(html.unwrap_or("".to_string())))
+            .map_err(internal_error)
+            .into_response(),
+    }
+}
+
 fn app(pool: PgPool) -> Router {
-    Router::new().route("/", get(index)).with_state(pool)
+    Router::new()
+        .route("/", get(index))
+        .route("/users", get(users))
+        .with_state(pool)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let db_url = std::option_env!("DATABASE_URL").unwrap_or("pg://localhost:28816/tankard");
+    let db_url = std::option_env!("DATABASE_URL").unwrap_or("postgres://localhost:28816/tankard");
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -56,7 +94,7 @@ mod tests {
     use crate::app;
 
     #[sqlx::test]
-    async fn index(pool: PgPool) -> Result<(), Box<dyn Error>> {
+    async fn users(pool: PgPool) -> Result<(), Box<dyn Error>> {
         pool.execute("create extension tankard;").await?;
         pool.execute(include_str!("../../db/sql/users.sql")).await?;
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
@@ -65,22 +103,51 @@ mod tests {
         let app = app(pool);
 
         let response = app
-            .oneshot(Request::builder().uri("/").body(Body::empty())?)
+            .oneshot(
+                Request::builder()
+                    .uri("/users")
+                    .header("Accept", "*/*")
+                    .body(Body::empty())?,
+            )
             .await?;
 
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = response.into_body().collect().await?.to_bytes();
-        let body = String::from_utf8(body.into())?;
-
-        let html = scraper::Html::parse_document(&body);
 
         assert_eq!(
-            Some("<table><thead><tr><th>Username</th></tr></thead><tbody><tr><td>one</td></tr><tr><td>two</td></tr><tr><td>three</td></tr></tbody></table>"),
-            html.select(&scraper::Selector::parse("table")?)
-                .next()
-                .map(|el| el.html())
-                .as_deref()
+            "<table><thead><tr><th scope=col>Username<tbody><tr><td>one<tr><td>two<tr><td>three</table>",
+            String::from_utf8(body.into())?
+        );
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn users_json(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+        pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');").await?;
+
+        let app = app(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/users")
+                    .header("Accept", "application/json")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await?.to_bytes();
+
+        assert_eq!(
+            serde_json::json!([{ "username": "one" }, { "username": "two" }, { "username": "three" }]),
+            serde_json::from_slice::<serde_json::Value>(&body)?
         );
 
         Ok(())

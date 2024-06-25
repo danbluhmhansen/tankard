@@ -180,6 +180,7 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "futures-util",
+ "headers",
  "http",
  "http-body",
  "http-body-util",
@@ -1060,6 +1061,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "headers"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "322106e6bd0cba2d5ead589ddb8150a13d7c4217cf80d7c4f682ca994ccc6aa9"
+dependencies = [
+ "base64",
+ "bytes",
+ "headers-core",
+ "http",
+ "httpdate",
+ "mime",
+ "sha1",
+]
+
+[[package]]
+name = "headers-accept"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abac9ba15f15a44969425b5f334e3ed11b54e3b2b7289a7fe1850e5a4e7cac21"
+dependencies = [
+ "headers-core",
+ "http",
+ "mediatype",
+]
+
+[[package]]
+name = "headers-core"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
+dependencies = [
+ "http",
+]
+
+[[package]]
 name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1435,6 +1471,12 @@ dependencies = [
  "cfg-if",
  "digest",
 ]
+
+[[package]]
+name = "mediatype"
+version = "0.19.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8878cd8d1b3c8c8ae4b2ba0a36652b7cf192f618a599a7fbdfa25cffd4ea72dd"
 
 [[package]]
 name = "memchr"
@@ -2549,9 +2591,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.117"
+version = "1.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "455182ea6142b14f93f4bc5320a2b31c1f266b66a4a5c858b013302a5d8cbfc3"
+checksum = "d947f6b3163d8857ea16c4fa0dd4840d52f3041039a85decd46867eb1abef2e4"
 dependencies = [
  "itoa",
  "ryu",
@@ -3032,8 +3074,10 @@ dependencies = [
  "axum",
  "axum-extra",
  "axum-htmx",
+ "headers-accept",
  "http-body-util",
  "scraper",
+ "serde_json",
  "sqlx",
  "tokio",
  "tower",

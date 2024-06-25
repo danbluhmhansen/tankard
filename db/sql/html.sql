@@ -19,16 +19,24 @@ create or replace function html(text) returns text language sql as $$
         >
         </script>
       </head>
-      <body><main>%s</main></body>
+      <body>
+        <header></header>
+        <main class="container">%s</main>
+        <footer></footer>
+      </body>
     </html>
   $html$, $1);
+$$;
+
+create or replace function html_index() returns text language sql as $$
+  select html('<div hx-get="/users" hx-trigger="revealed"></div>');
 $$;
 
 create or replace function html_users() returns text language sql as $$
   select format($html$
     <table>
       <thead>
-        <tr><th>Username</th></tr>
+        <tr><th scope="col">Username</th></tr>
       </thead>
       <tbody>%s</tbody>
     </table>
