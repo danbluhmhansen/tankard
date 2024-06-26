@@ -32,13 +32,16 @@ create or replace function html_index() returns text language sql as $$
   select html('<div hx-get="/users" hx-trigger="revealed"></div>');
 $$;
 
-create or replace function html_users() returns text language sql as $$
-  select format($html$
-    <table>
-      <thead>
-        <tr><th scope="col">Username</th></tr>
-      </thead>
-      <tbody>%s</tbody>
-    </table>
-  $html$, (select string_agg(format('<tr><td>%s</td></tr>', username), null) from users));
+create or replace function array_to_html(head text[], body anyarray) returns text language plpgsql as $$
+declare
+  html text := '<table><thead><tr><th scope=col>';
+  x text[];
+begin
+  html := html || array_to_string(head, '</th><th scope=col>') || '</th></tr></thead><tbody>';
+  foreach x slice 1 in array body loop
+    html := html || '<tr><td>' || array_to_string(x, '</td><td>') || '</td></tr>';
+  end loop;
+  html := html || '</tbody></table>';
+  return html;
+end;
 $$;
