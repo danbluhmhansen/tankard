@@ -1,20 +1,43 @@
 use std::{error::Error, time::Duration};
 
 use axum::{
-    extract::State,
-    http::StatusCode,
+    async_trait,
+    extract::{FromRequestParts, State},
+    http::{request::Parts, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::get,
     Json, Router,
 };
-use axum_extra::{extract::Query, TypedHeader};
-use serde::Deserialize;
+use axum_extra::TypedHeader;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::net::TcpListener;
 
-#[derive(Debug, Deserialize)]
+mod parser;
+
+#[derive(Debug)]
 struct ApiQuery {
-    select: Option<String>,
+    select: Vec<String>,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for ApiQuery
+where
+    S: Send + Sync,
+{
+    type Rejection = String;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(query) = parts.uri.query() {
+            match parser::query_select(query) {
+                Ok((_, select)) => Ok(Self {
+                    select: select.into_iter().map(|s| s.to_string()).collect(),
+                }),
+                Err(err) => Err(err.to_string()),
+            }
+        } else {
+            Ok(Self { select: vec![] })
+        }
+    }
 }
 
 fn internal_error<E>(err: E) -> (StatusCode, String)
@@ -33,7 +56,7 @@ async fn index(State(pool): State<PgPool>) -> Result<Html<String>, (StatusCode, 
 }
 
 async fn users(
-    Query(query): Query<ApiQuery>,
+    ApiQuery { select }: ApiQuery,
     accept: Option<TypedHeader<headers_accept::Accept>>,
     State(pool): State<PgPool>,
 ) -> Response {
@@ -43,40 +66,54 @@ async fn users(
                 .media_types()
                 .any(|mt| mt.essence().to_string() == "application/json") =>
         {
-            if let Some(select) = query.select.map(|select| {
-                select
-                    .split(',')
-                    .map(|s| format!("'{s}', {s}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }) {
-                // FIXME: sql injection?
-                sqlx::query_scalar::<_, serde_json::Value>(&format!(
-                    "select jsonb_agg(jsonb_build_object({select})) from users;"
-                ))
-                .fetch_one(&pool)
-                .await
-                .map(Json)
-                .map_err(internal_error)
-                .into_response()
+            let select = if !select.is_empty() {
+                &format!(
+                    "jsonb_build_object({})",
+                    select
+                        .iter()
+                        .map(|s| format!("'{s}', {s}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
             } else {
-                sqlx::query_scalar!("select jsonb_agg(users) from users;")
-                    .fetch_one(&pool)
-                    .await
-                    .map(Json)
-                    .map_err(internal_error)
-                    .into_response()
-            }
+                "users"
+            };
+            // FIXME: sql injection?
+            sqlx::query_scalar::<_, serde_json::Value>(&format!(
+                "select jsonb_agg({select}) from users;"
+            ))
+            .fetch_one(&pool)
+            .await
+            .map(Json)
+            .map_err(internal_error)
+            .into_response()
         }
         // TODO: read column selection from ApiQuery
-        _ => sqlx::query_scalar!(
-            "select array_to_html(array['Username', 'Email'], (select array_agg(array[username, email]) from users));"
-        )
-        .fetch_one(&pool)
-        .await
-        .map(|html| Html(html.unwrap_or("".to_string())))
-        .map_err(internal_error)
-        .into_response(),
+        _ => {
+            let head = if !select.is_empty() {
+                &select
+                    .iter()
+                    .map(|s| format!("'{s}'"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            } else {
+                "'id','added','updated','username','salt','passhash','email'"
+            };
+            let select = if !select.is_empty() {
+                &select.join(",")
+            } else {
+                "users"
+            };
+            // FIXME: sql injection?
+            sqlx::query_scalar::<_, Option<String>>(
+                &format!("select array_to_html(array[{head}], (select array_agg(array[{select}]) from users));")
+            )
+            .fetch_one(&pool)
+            .await
+            .map(|html| Html(html.unwrap_or("".to_string())))
+            .map_err(internal_error)
+            .into_response()
+        }
     }
 }
 
@@ -142,7 +179,7 @@ mod tests {
         let body = response.into_body().collect().await?.to_bytes();
 
         assert_eq!(
-            "<table><thead><tr><th scope=col>Username</th><th scope=col>Email</th></tr></thead><tbody><tr><td>one</td><td>foo</td></tr><tr><td>two</td><td>foo</td></tr><tr><td>three</td><td>foo</td></tr></tbody></table>",
+            "<table><thead><tr><th scope=col>username</th><th scope=col>email</th></tr></thead><tbody><tr><td>one</td><td>foo</td></tr><tr><td>two</td><td>foo</td></tr><tr><td>three</td><td>foo</td></tr></tbody></table>",
             String::from_utf8(body.into())?
         );
 
