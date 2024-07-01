@@ -21,22 +21,16 @@ struct ApiQuery {
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for ApiQuery
-where
-    S: Send + Sync,
-{
+impl<S> FromRequestParts<S> for ApiQuery {
     type Rejection = String;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        if let Some(query) = parts.uri.query() {
-            match parser::query_select(query) {
-                Ok((_, select)) => Ok(Self {
-                    select: select.into_iter().map(|s| s.to_string()).collect(),
-                }),
-                Err(err) => Err(err.to_string()),
-            }
-        } else {
-            Ok(Self { select: vec![] })
+        match parts.uri.query().map(|query| parser::query_select(query)) {
+            Some(Ok((_, select))) => Ok(Self {
+                select: select.into_iter().map(|s| s.to_string()).collect(),
+            }),
+            Some(Err(err)) => Err(err.to_string()),
+            None => Ok(Self { select: vec![] }),
         }
     }
 }
@@ -60,91 +54,83 @@ async fn index(
 
 async fn users(
     ApiQuery { select }: ApiQuery,
-    accept: Option<TypedHeader<headers_accept::Accept>>,
+    TypedHeader(accept): TypedHeader<headers_accept::Accept>,
     Extension(pool): Extension<&'static PgPool>,
 ) -> Response {
-    match accept {
-        Some(TypedHeader(accept))
-            if accept
-                .media_types()
-                .any(|mt| mt.essence().to_string() == "application/json") =>
-        {
-            let select = if !select.is_empty() {
-                &format!(
-                    "jsonb_build_object({})",
-                    select
-                        .iter()
-                        .map(|s| format!("'{s}', {s}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            } else {
-                "users"
-            };
-            // FIXME: sql injection?
-            sqlx::query_scalar::<_, serde_json::Value>(&format!(
-                "select jsonb_agg({select}) from users;"
-            ))
-            .fetch_one(pool)
-            .await
-            .map(Json)
-            .map_err(internal_error)
-            .into_response()
-        }
-        Some(TypedHeader(accept))
-            if accept
-                .media_types()
-                .any(|mt| mt.essence().to_string() == "text/csv") =>
-        {
-            match pool.acquire().await {
-                Ok(conn) => {
-                    let select = if !select.is_empty() {
-                        &select.join(",")
-                    } else {
-                        "*"
-                    };
-                    match Box::leak(Box::new(conn))
-                        .copy_out_raw(&format!(
-                            "copy (select {select} from users) to stdout with csv header;"
-                        ))
-                        .await
-                    {
-                        Ok(stream) => Body::from_stream(stream).into_response(),
-                        Err(err) => internal_error(err).into_response(),
-                    }
-                }
-                Err(err) => internal_error(err).into_response(),
-            }
-        }
-        _ => {
-            let head = if !select.is_empty() {
-                &select
+    if accept
+        .media_types()
+        .any(|mt| mt.to_string() == "application/json")
+    {
+        let select = if !select.is_empty() {
+            &format!(
+                "jsonb_build_object({})",
+                select
                     .iter()
-                    .map(|s| format!("'{s}'"))
+                    .map(|s| format!("'{s}', {s}"))
                     .collect::<Vec<_>>()
                     .join(",")
-            } else {
-                "'id','added','updated','username','salt','passhash','email'"
-            };
-            let select = if !select.is_empty() {
-                &select
-                    .iter()
-                    .map(|s| format!("{s}::text"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            } else {
-                "users"
-            };
-            // FIXME: sql injection?
-            sqlx::query_scalar::<_, Option<String>>(
-                &format!("select array_to_html(array[{head}], (select array_agg(array[{select}]) from users));")
             )
-            .fetch_one(pool)
-            .await
-            .map(|html| Html(html.unwrap_or("".to_string())))
-            .map_err(internal_error)
-            .into_response()
+        } else {
+            "users"
+        };
+        // FIXME: sql injection?
+        sqlx::query_scalar::<_, serde_json::Value>(&format!(
+            "select jsonb_agg({select}) from users;"
+        ))
+        .fetch_one(pool)
+        .await
+        .map(Json)
+        .map_err(internal_error)
+        .into_response()
+    } else if accept.media_types().any(|mt| mt.to_string() == "text/csv") {
+        match pool.acquire().await {
+            Ok(conn) => {
+                let select = if !select.is_empty() {
+                    &select.join(",")
+                } else {
+                    "*"
+                };
+                // FIXME: sql injection?
+                match Box::leak(Box::new(conn))
+                    .copy_out_raw(&format!(
+                        "copy (select {select} from users) to stdout with csv header;"
+                    ))
+                    .await
+                {
+                    Ok(stream) => Body::from_stream(stream).into_response(),
+                    Err(err) => internal_error(err).into_response(),
+                }
+            }
+            Err(err) => internal_error(err).into_response(),
         }
+    } else {
+        let head = if !select.is_empty() {
+            &select
+                .iter()
+                .map(|s| format!("'{s}'"))
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            "'id','added','updated','username','salt','passhash','email'"
+        };
+        let select = if !select.is_empty() {
+            &select
+                .iter()
+                .map(|s| format!("{s}::text"))
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            "users"
+        };
+        // FIXME: sql injection?
+        sqlx::query_scalar::<_, String>(&format!(
+            "select html_minify(array_to_html(array[{head}], (select array_agg(array[{select}]) from users)));"
+        ))
+        .fetch_one(pool)
+        .await
+        .map(Html)
+        .map_err(internal_error)
+        .into_response()
     }
 }
 
@@ -207,11 +193,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = response.into_body().collect().await?.to_bytes();
-
         assert_eq!(
-            "<table><thead><tr><th scope=col>username</th><th scope=col>email</th></tr></thead><tbody><tr><td>one</td><td>foo</td></tr><tr><td>two</td><td>foo</td></tr><tr><td>three</td><td>foo</td></tr></tbody></table>",
-            String::from_utf8(body.into())?
+            "<table><thead><tr><th scope=col>username<th scope=col>email<tbody><tr><td>one<td>foo<tr><td>two<td>foo<tr><td>three<td>foo</table>",
+            response.into_body().collect().await?.to_bytes()
         );
 
         Ok(())
