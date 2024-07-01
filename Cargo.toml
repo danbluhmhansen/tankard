@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "db"]
+members = ["db", "srv"]
 resolver = "2"
 
 [profile.dev]
