@@ -2,11 +2,12 @@ use std::{error::Error, time::Duration};
 
 use axum::{
     async_trait,
-    extract::{FromRequestParts, State},
+    body::Body,
+    extract::FromRequestParts,
     http::{request::Parts, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::get,
-    Json, Router,
+    Extension, Json, Router,
 };
 use axum_extra::TypedHeader;
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -47,9 +48,11 @@ where
     (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
 
-async fn index(State(pool): State<PgPool>) -> Result<Html<String>, (StatusCode, String)> {
+async fn index(
+    Extension(pool): Extension<&'static PgPool>,
+) -> Result<Html<String>, (StatusCode, String)> {
     sqlx::query_scalar("select html_minify(html_index());")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map(Html)
         .map_err(internal_error)
@@ -58,7 +61,7 @@ async fn index(State(pool): State<PgPool>) -> Result<Html<String>, (StatusCode, 
 async fn users(
     ApiQuery { select }: ApiQuery,
     accept: Option<TypedHeader<headers_accept::Accept>>,
-    State(pool): State<PgPool>,
+    Extension(pool): Extension<&'static PgPool>,
 ) -> Response {
     match accept {
         Some(TypedHeader(accept))
@@ -82,13 +85,37 @@ async fn users(
             sqlx::query_scalar::<_, serde_json::Value>(&format!(
                 "select jsonb_agg({select}) from users;"
             ))
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .map(Json)
             .map_err(internal_error)
             .into_response()
         }
-        // TODO: read column selection from ApiQuery
+        Some(TypedHeader(accept))
+            if accept
+                .media_types()
+                .any(|mt| mt.essence().to_string() == "text/csv") =>
+        {
+            match pool.acquire().await {
+                Ok(conn) => {
+                    let select = if !select.is_empty() {
+                        &select.join(",")
+                    } else {
+                        "*"
+                    };
+                    match Box::leak(Box::new(conn))
+                        .copy_out_raw(&format!(
+                            "copy (select {select} from users) to stdout with csv header;"
+                        ))
+                        .await
+                    {
+                        Ok(stream) => Body::from_stream(stream).into_response(),
+                        Err(err) => internal_error(err).into_response(),
+                    }
+                }
+                Err(err) => internal_error(err).into_response(),
+            }
+        }
         _ => {
             let head = if !select.is_empty() {
                 &select
@@ -100,7 +127,11 @@ async fn users(
                 "'id','added','updated','username','salt','passhash','email'"
             };
             let select = if !select.is_empty() {
-                &select.join(",")
+                &select
+                    .iter()
+                    .map(|s| format!("{s}::text"))
+                    .collect::<Vec<_>>()
+                    .join(",")
             } else {
                 "users"
             };
@@ -108,7 +139,7 @@ async fn users(
             sqlx::query_scalar::<_, Option<String>>(
                 &format!("select array_to_html(array[{head}], (select array_agg(array[{select}]) from users));")
             )
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .map(|html| Html(html.unwrap_or("".to_string())))
             .map_err(internal_error)
@@ -117,11 +148,11 @@ async fn users(
     }
 }
 
-fn app(pool: PgPool) -> Router {
+fn app(pool: &'static PgPool) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/users", get(users))
-        .with_state(pool)
+        .layer(Extension(pool))
 }
 
 #[tokio::main]
@@ -134,7 +165,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .connect(db_url)
         .await?;
 
-    let app = app(pool);
+    let app = app(Box::leak(Box::new(pool)));
 
     let listener = TcpListener::bind("127.0.0.1:3000").await?;
     axum::serve(listener, app).await?;
@@ -163,7 +194,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
         pool.execute("insert into users (username, salt, passhash, email) values ('one', '', '', 'foo'), ('two', '', '', 'foo'), ('three', '', '', 'foo');").await?;
 
-        let app = app(pool);
+        let app = app(Box::leak(Box::new(pool)));
 
         let response = app
             .oneshot(
@@ -193,7 +224,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
         pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');").await?;
 
-        let app = app(pool);
+        let app = app(Box::leak(Box::new(pool)));
 
         let response = app
             .oneshot(
@@ -211,6 +242,34 @@ mod tests {
         assert_eq!(
             serde_json::json!([{ "username": "one" }, { "username": "two" }, { "username": "three" }]),
             serde_json::from_slice::<serde_json::Value>(&body)?
+        );
+
+        Ok(())
+    }
+
+    // FIXME: test performance on success
+    #[sqlx::test]
+    async fn users_csv(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+        pool.execute("insert into users (username, salt, passhash, email) values ('one', '', '', 'foo'), ('two', '', '', 'foo'), ('three', '', '', 'foo');").await?;
+
+        let app = app(Box::leak(Box::new(pool)));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/users?select=username,email")
+                    .header("Accept", "text/csv")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.into_body().collect().await?.to_bytes(),
+            "username,email\none,foo\ntwo,foo\nthree,foo\n"
         );
 
         Ok(())

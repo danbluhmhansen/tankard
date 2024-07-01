@@ -29,7 +29,7 @@ create or replace function html(text) returns text language sql as $$
 $$;
 
 create or replace function html_index() returns text language sql as $$
-  select html('<div hx-get="/users" hx-trigger="revealed"></div>');
+  select html('<div hx-get="/users?select=id,username" hx-trigger="revealed"></div>');
 $$;
 
 create or replace function array_to_html(head text[], body anyarray) returns text language plpgsql as $$
