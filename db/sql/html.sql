@@ -45,3 +45,12 @@ begin
   return html;
 end;
 $$;
+
+create or replace function trg_users_event () returns trigger language plpgsql as $$
+begin
+  perform pg_notify('users_event', '');
+  return null;
+end;
+$$;
+
+create or replace trigger trg_users_event after insert or update or delete on users execute function trg_users_event();

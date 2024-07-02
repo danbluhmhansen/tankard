@@ -5,12 +5,16 @@ use axum::{
     body::Body,
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{sse::Event, Html, IntoResponse, Response, Sse},
     routing::get,
     Extension, Json, Router,
 };
 use axum_extra::TypedHeader;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use futures::{Stream, TryStreamExt};
+use sqlx::{
+    postgres::{PgListener, PgPoolOptions},
+    PgPool,
+};
 use tokio::net::TcpListener;
 
 mod parser;
@@ -134,10 +138,25 @@ async fn users(
     }
 }
 
+async fn users_listen(
+    Extension(pool): Extension<&'static PgPool>,
+) -> Result<Sse<impl Stream<Item = Result<Event, sqlx::Error>>>, (StatusCode, String)> {
+    match PgListener::connect_with(pool).await {
+        Ok(mut listener) => {
+            _ = listener.listen("users_event").await;
+            Ok(Sse::new(listener.into_stream().map_ok(|n| {
+                Event::default().event("users_event").data(n.payload())
+            })))
+        }
+        Err(err) => Err(internal_error(err)),
+    }
+}
+
 fn app(pool: &'static PgPool) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/users", get(users))
+        .route("/users_listen", get(users_listen))
         .layer(Extension(pool))
 }
 
@@ -167,6 +186,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use futures::StreamExt;
     use http_body_util::BodyExt;
     use sqlx::{Executor, PgPool};
     use tower::ServiceExt;
@@ -254,6 +274,37 @@ mod tests {
         assert_eq!(
             response.into_body().collect().await?.to_bytes(),
             "username,email\none,foo\ntwo,foo\nthree,foo\n"
+        );
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn users_listen(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        let pool = Box::leak(Box::new(pool));
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+        pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');")
+            .await?;
+
+        let response = app(pool)
+            .oneshot(
+                Request::builder()
+                    .uri("/users_listen")
+                    .header("Accept", "*/*")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        pool.execute("insert into users (username, salt, passhash) values ('four', '', '');")
+            .await?;
+
+        assert_eq!(
+            response.into_data_stream().next().await.unwrap()?,
+            "event: users_event\ndata: \n\n"
         );
 
         Ok(())
