@@ -80,7 +80,7 @@ async fn users(
         };
         // FIXME: sql injection?
         sqlx::query_scalar::<_, serde_json::Value>(&format!(
-            "select jsonb_agg({select}) from users;"
+            "select coalesce(jsonb_agg({select}), 'null'::jsonb) from users;"
         ))
         .fetch_one(pool)
         .await
@@ -224,6 +224,30 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn users_html_empty(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+
+        let app = app(Box::leak(Box::new(pool)));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/users?select=username,email")
+                    .header("Accept", "*/*")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert_eq!("", response.into_body().collect().await?.to_bytes());
+
+        Ok(())
+    }
+
+    #[sqlx::test]
     async fn users_json(pool: PgPool) -> Result<(), Box<dyn Error>> {
         pool.execute("create extension tankard;").await?;
         pool.execute(include_str!("../../db/sql/users.sql")).await?;
@@ -253,6 +277,35 @@ mod tests {
         Ok(())
     }
 
+    #[sqlx::test]
+    async fn users_json_empty(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+
+        let app = app(Box::leak(Box::new(pool)));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/users?select=username")
+                    .header("Accept", "application/json")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        // assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await?.to_bytes();
+
+        assert_eq!(
+            serde_json::Value::Null,
+            serde_json::from_slice::<serde_json::Value>(&body)?
+        );
+
+        Ok(())
+    }
+
     // FIXME: test performance on success
     #[sqlx::test]
     async fn users_csv(pool: PgPool) -> Result<(), Box<dyn Error>> {
@@ -276,6 +329,33 @@ mod tests {
         assert_eq!(
             response.into_body().collect().await?.to_bytes(),
             "username,email\none,foo\ntwo,foo\nthree,foo\n"
+        );
+
+        Ok(())
+    }
+
+    // FIXME: test performance on success
+    #[sqlx::test]
+    async fn users_csv_empty(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+
+        let app = app(Box::leak(Box::new(pool)));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/users?select=username,email")
+                    .header("Accept", "text/csv")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.into_body().collect().await?.to_bytes(),
+            "username,email\n"
         );
 
         Ok(())

@@ -32,6 +32,10 @@ declare
   html text := '<table><thead><tr><th scope=col>';
   x text[];
 begin
+  if head is null or body is null then
+    return '';
+  end if;
+
   html := html || array_to_string(head, '</th><th scope=col>') || '</th></tr></thead><tbody>';
   foreach x slice 1 in array body loop
     html := html || '<tr><td>' || array_to_string(x, '</td><td>') || '</td></tr>';
