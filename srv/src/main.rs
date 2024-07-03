@@ -16,6 +16,7 @@ use sqlx::{
     PgPool,
 };
 use tokio::net::TcpListener;
+use tower_http::services::ServeDir;
 
 mod parser;
 
@@ -157,6 +158,7 @@ fn app(pool: &'static PgPool) -> Router {
         .route("/", get(index))
         .route("/users", get(users))
         .route("/users_listen", get(users_listen))
+        .fallback_service(ServeDir::new("dist"))
         .layer(Extension(pool))
 }
 

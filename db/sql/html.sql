@@ -6,18 +6,9 @@ create or replace function html(text) returns text language sql as $$
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
         <title>Tankard</title>
-        <link
-          rel="stylesheet"
-          href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css"
-          integrity="sha384-7P0NVe9LPDbUCAF+fH2R8Egwz1uqNH83Ns/bfJY0fN2XCDBMUI2S9gGzIOIRBKsA"
-          crossorigin="anonymous"
-        />
-        <script
-          src="https://unpkg.com/htmx.org@2.0.0"
-          integrity="sha384-wS5l5IKJBvK6sPTKa2WZ1js3d947pvWXbPJ1OmWfEuxLgeHcEbjUUA5i9V5ZkpCw"
-          crossorigin="anonymous"
-        >
-        </script>
+        <link rel="stylesheet" href="pico.css" />
+        <script src="htmx.js"></script>
+        <script src="sse.js"></script>
       </head>
       <body>
         <header></header>
@@ -29,7 +20,11 @@ create or replace function html(text) returns text language sql as $$
 $$;
 
 create or replace function html_index() returns text language sql as $$
-  select html('<div hx-get="/users?select=id,username" hx-trigger="revealed"></div>');
+  select html($html$
+    <div hx-ext="sse" sse-connect="/users_listen">
+      <div hx-trigger="sse:users_event, revealed" hx-get="/users?select=id,username"></div>
+    </div>
+  $html$);
 $$;
 
 create or replace function array_to_html(head text[], body anyarray) returns text language plpgsql as $$

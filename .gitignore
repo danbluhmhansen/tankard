@@ -1,6 +1,14 @@
-.DS_Store
-.idea/
+# cargo
 /target
-*.iml
 **/*.rs.bk
 Cargo.lock
+
+# mac
+.DS_Store
+
+# intellij
+.idea/
+*.iml
+
+# tankard
+dist/
