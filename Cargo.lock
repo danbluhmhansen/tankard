@@ -1582,6 +1582,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijinja"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "933ee10775d58fca8238a84fe165dfe4bde8b07d7574f24d76ffea91170f3ac6"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3133,6 +3142,7 @@ version = "0.1.0"
 dependencies = [
  "json-patch",
  "minify-html-onepass",
+ "minijinja",
  "pgrx",
  "pgrx-tests",
  "serde",

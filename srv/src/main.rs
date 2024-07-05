@@ -129,8 +129,9 @@ async fn users(
         };
         // FIXME: sql injection?
         sqlx::query_scalar::<_, String>(&format!(
-            "select html_minify(array_to_html(array[{head}], (select array_agg(array[{select}]) from users)));"
+            "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from users)))));"
         ))
+        .bind(include_str!("../../tmpl/table.html"))
         .fetch_one(pool)
         .await
         .map(Html)
@@ -200,7 +201,7 @@ mod tests {
         pool.execute("create extension tankard;").await?;
         pool.execute(include_str!("../../db/sql/users.sql")).await?;
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
-        pool.execute("insert into users (username, salt, passhash, email) values ('one', '', '', 'foo'), ('two', '', '', 'foo'), ('three', '', '', 'foo');").await?;
+        pool.execute("insert into users (id, username, salt, passhash, email) values ('00000000-0000-0000-0000-000000000000', 'one', '', '', 'foo'), ('00000000-0000-0000-0000-000000000001', 'two', '', '', 'foo'), ('00000000-0000-0000-0000-000000000002', 'three', '', '', 'foo');").await?;
 
         let app = app(Box::leak(Box::new(pool)));
 
@@ -216,7 +217,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         assert_eq!(
-            "<table><thead><tr><th scope=col>username<th scope=col>email<tbody><tr><td>one<td>foo<tr><td>two<td>foo<tr><td>three<td>foo</table>",
+            "<table><thead><tr><th scope=col>username<th scope=col>email<tbody><tr id=00000000-0000-0000-0000-000000000000><td>one<td>foo<tr id=00000000-0000-0000-0000-000000000001><td>two<td>foo<tr id=00000000-0000-0000-0000-000000000002><td>three<td>foo</table>",
             response.into_body().collect().await?.to_bytes()
         );
 

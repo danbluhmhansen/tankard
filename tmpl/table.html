@@ -1,0 +1,21 @@
+{% if body %}
+<table>
+  <thead>
+    <tr>
+      {% for col in head %}
+      <th scope="col">{{ col }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in body %}
+    <tr id="{{ row.key }}">
+      {% for col in row.cols %}
+      <td>{{ col }}</td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{# TODO: implement "if empty" case #}

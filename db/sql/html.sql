@@ -27,24 +27,6 @@ create or replace function html_index() returns text language sql as $$
   $html$);
 $$;
 
-create or replace function array_to_html(head text[], body anyarray) returns text language plpgsql as $$
-declare
-  html text := '<table><thead><tr><th scope=col>';
-  x text[];
-begin
-  if head is null or body is null then
-    return '';
-  end if;
-
-  html := html || array_to_string(head, '</th><th scope=col>') || '</th></tr></thead><tbody>';
-  foreach x slice 1 in array body loop
-    html := html || '<tr><td>' || array_to_string(x, '</td><td>') || '</td></tr>';
-  end loop;
-  html := html || '</tbody></table>';
-  return html;
-end;
-$$;
-
 create or replace function trg_users_event () returns trigger language plpgsql as $$
 begin
   perform pg_notify('users_event', '');
