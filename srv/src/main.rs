@@ -3,7 +3,7 @@ use std::{error::Error, time::Duration};
 use axum::{
     async_trait,
     body::Body,
-    extract::FromRequestParts,
+    extract::{FromRequestParts, Path},
     http::{request::Parts, StatusCode},
     response::{sse::Event, Html, IntoResponse, Response, Sse},
     routing::get,
@@ -57,7 +57,9 @@ async fn index(
         .map_err(internal_error)
 }
 
-async fn users(
+// TODO: generate specific endpoints from db tables instead of it being dynamic
+async fn api_table(
+    Path(table): Path<String>,
     ApiQuery { select }: ApiQuery,
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
     Extension(pool): Extension<&'static PgPool>,
@@ -76,11 +78,11 @@ async fn users(
                     .join(",")
             )
         } else {
-            "users"
+            &table
         };
         // FIXME: sql injection?
         sqlx::query_scalar::<_, serde_json::Value>(&format!(
-            "select coalesce(jsonb_agg({select}), 'null'::jsonb) from users;"
+            "select coalesce(jsonb_agg({select}), 'null'::jsonb) from {table};"
         ))
         .fetch_one(pool)
         .await
@@ -98,7 +100,7 @@ async fn users(
                 // FIXME: sql injection?
                 match Box::leak(Box::new(conn))
                     .copy_out_raw(&format!(
-                        "copy (select {select} from users) to stdout with csv header;"
+                        "copy (select {select} from {table}) to stdout with csv header;"
                     ))
                     .await
                 {
@@ -116,7 +118,23 @@ async fn users(
                 .collect::<Vec<_>>()
                 .join(",")
         } else {
-            "'id','added','updated','username','salt','passhash','email'"
+            let cols = sqlx::query_scalar::<_, String>(
+                "select column_name::text from information_schema.columns where table_name = $1;",
+            )
+            .bind(&table)
+            .fetch_all(pool)
+            .await
+            .map(|cols| {
+                cols.into_iter()
+                    .map(|col| format!("'{col}'"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .map_err(internal_error);
+            if let Err(err) = cols {
+                return err.into_response();
+            }
+            &cols.unwrap_or_default()
         };
         let select = if !select.is_empty() {
             &select
@@ -125,11 +143,12 @@ async fn users(
                 .collect::<Vec<_>>()
                 .join(",")
         } else {
-            "users"
+            &table
         };
         // FIXME: sql injection?
+        // TODO: support other keys than `id`
         sqlx::query_scalar::<_, String>(&format!(
-            "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from users)))));"
+            "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from {table})))));"
         ))
         .bind(include_str!("../../tmpl/table.html"))
         .fetch_one(pool)
@@ -140,14 +159,15 @@ async fn users(
     }
 }
 
-async fn users_listen(
+async fn listen(
+    Path(event): Path<String>,
     Extension(pool): Extension<&'static PgPool>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, sqlx::Error>>>, (StatusCode, String)> {
     match PgListener::connect_with(pool).await {
         Ok(mut listener) => {
-            _ = listener.listen("users_event").await;
-            Ok(Sse::new(listener.into_stream().map_ok(|n| {
-                Event::default().event("users_event").data(n.payload())
+            _ = listener.listen(&event).await;
+            Ok(Sse::new(listener.into_stream().map_ok(move |n| {
+                Event::default().event(&event).data(n.payload())
             })))
         }
         Err(err) => Err(internal_error(err)),
@@ -157,8 +177,8 @@ async fn users_listen(
 fn app(pool: &'static PgPool) -> Router {
     Router::new()
         .route("/", get(index))
-        .route("/users", get(users))
-        .route("/users_listen", get(users_listen))
+        .route("/api/:table", get(api_table))
+        .route("/listen/:event", get(listen))
         .fallback_service(ServeDir::new("dist"))
         .layer(Extension(pool))
 }
@@ -208,7 +228,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/users?select=username,email")
+                    .uri("/api/users?select=username,email")
                     .header("Accept", "*/*")
                     .body(Body::empty())?,
             )
@@ -235,7 +255,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/users?select=username,email")
+                    .uri("/api/users?select=username,email")
                     .header("Accept", "*/*")
                     .body(Body::empty())?,
             )
@@ -260,7 +280,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/users?select=username")
+                    .uri("/api/users?select=username")
                     .header("Accept", "application/json")
                     .body(Body::empty())?,
             )
@@ -289,7 +309,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/users?select=username")
+                    .uri("/api/users?select=username")
                     .header("Accept", "application/json")
                     .body(Body::empty())?,
             )
@@ -320,7 +340,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/users?select=username,email")
+                    .uri("/api/users?select=username,email")
                     .header("Accept", "text/csv")
                     .body(Body::empty())?,
             )
@@ -347,7 +367,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/users?select=username,email")
+                    .uri("/api/users?select=username,email")
                     .header("Accept", "text/csv")
                     .body(Body::empty())?,
             )
@@ -374,7 +394,7 @@ mod tests {
         let response = app(pool)
             .oneshot(
                 Request::builder()
-                    .uri("/users_listen")
+                    .uri("/listen/users_event")
                     .header("Accept", "*/*")
                     .body(Body::empty())?,
             )
