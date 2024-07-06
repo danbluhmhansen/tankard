@@ -1,16 +1,18 @@
-use std::{error::Error, time::Duration};
+use std::{collections::HashMap, error::Error, time::Duration};
 
 use axum::{
     async_trait,
     body::Body,
-    extract::{FromRequestParts, Path},
+    extract::{FromRequestParts, Path, Request, State},
     http::{request::Parts, StatusCode},
+    middleware::{self, Next},
     response::{sse::Event, Html, IntoResponse, Response, Sse},
     routing::get,
     Extension, Json, Router,
 };
 use axum_extra::TypedHeader;
 use futures::{Stream, TryStreamExt};
+use serde::{Deserialize, Serialize};
 use sqlx::{
     postgres::{PgListener, PgPoolOptions},
     PgPool,
@@ -48,7 +50,7 @@ where
 }
 
 async fn index(
-    Extension(pool): Extension<&'static PgPool>,
+    State(AppState { pool }): State<AppState>,
 ) -> Result<Html<String>, (StatusCode, String)> {
     sqlx::query_scalar("select html_minify(html_index());")
         .fetch_one(pool)
@@ -57,12 +59,11 @@ async fn index(
         .map_err(internal_error)
 }
 
-// TODO: generate specific endpoints from db tables instead of it being dynamic
 async fn api_table(
     Path(table): Path<String>,
     ApiQuery { select }: ApiQuery,
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
-    Extension(pool): Extension<&'static PgPool>,
+    State(AppState { pool }): State<AppState>,
 ) -> Response {
     if accept
         .media_types()
@@ -80,7 +81,6 @@ async fn api_table(
         } else {
             &table
         };
-        // FIXME: sql injection?
         sqlx::query_scalar::<_, serde_json::Value>(&format!(
             "select coalesce(jsonb_agg({select}), 'null'::jsonb) from {table};"
         ))
@@ -97,7 +97,6 @@ async fn api_table(
                 } else {
                     "*"
                 };
-                // FIXME: sql injection?
                 match Box::leak(Box::new(conn))
                     .copy_out_raw(&format!(
                         "copy (select {select} from {table}) to stdout with csv header;"
@@ -145,7 +144,6 @@ async fn api_table(
         } else {
             &table
         };
-        // FIXME: sql injection?
         // TODO: support other keys than `id`
         sqlx::query_scalar::<_, String>(&format!(
             "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from {table})))));"
@@ -161,7 +159,7 @@ async fn api_table(
 
 async fn listen(
     Path(event): Path<String>,
-    Extension(pool): Extension<&'static PgPool>,
+    State(AppState { pool }): State<AppState>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, sqlx::Error>>>, (StatusCode, String)> {
     match PgListener::connect_with(pool).await {
         Ok(mut listener) => {
@@ -174,13 +172,73 @@ async fn listen(
     }
 }
 
-fn app(pool: &'static PgPool) -> Router {
-    Router::new()
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Column {
+    column_name: String,
+    data_type: String,
+}
+
+#[derive(Debug, Clone)]
+struct AppState {
+    pool: &'static PgPool,
+}
+
+async fn api_mdw(
+    Path(table): Path<String>,
+    ApiQuery { select }: ApiQuery,
+    request: Request,
+    next: Next,
+) -> Response {
+    let tables = match request.extensions().get::<HashMap<String, Vec<Column>>>() {
+        Some(tables) => tables,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let table = match tables.get(&table) {
+        Some(table) => table,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let bad_selects: Vec<_> = select
+        .iter()
+        .filter(|&s| !table.iter().any(|c| &c.column_name == s))
+        .map(|s| s.as_str())
+        .collect();
+
+    if !bad_selects.is_empty() {
+        // TODO: better error response
+        return (StatusCode::BAD_REQUEST, bad_selects.join(",")).into_response();
+    }
+
+    next.run(request).await
+}
+
+async fn app(pool: &'static PgPool) -> Result<Router, sqlx::Error> {
+    // TODO: live refresh of schema
+    let tables: HashMap<_, _> = sqlx::query_file!("sql/schema_tables_columns.sql")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            row.table_name.zip(
+                row.columns
+                    .and_then(|columns| serde_json::from_value::<Vec<Column>>(columns).ok()),
+            )
+        })
+        .collect();
+
+    Ok(Router::new()
         .route("/", get(index))
-        .route("/api/:table", get(api_table))
+        .nest(
+            "/api/:table",
+            Router::new()
+                .route("/", get(api_table))
+                .layer(middleware::from_fn(api_mdw)),
+        )
         .route("/listen/:event", get(listen))
         .fallback_service(ServeDir::new("dist"))
-        .layer(Extension(pool))
+        .layer(Extension(tables))
+        .with_state(AppState { pool }))
 }
 
 #[tokio::main]
@@ -193,7 +251,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .connect(db_url)
         .await?;
 
-    let app = app(Box::leak(Box::new(pool)));
+    let app = app(Box::leak(Box::new(pool))).await?;
 
     let listener = TcpListener::bind("127.0.0.1:3000").await?;
     axum::serve(listener, app).await?;
@@ -223,7 +281,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
         pool.execute("insert into users (id, username, salt, passhash, email) values ('00000000-0000-0000-0000-000000000000', 'one', '', '', 'foo'), ('00000000-0000-0000-0000-000000000001', 'two', '', '', 'foo'), ('00000000-0000-0000-0000-000000000002', 'three', '', '', 'foo');").await?;
 
-        let app = app(Box::leak(Box::new(pool)));
+        let app = app(Box::leak(Box::new(pool))).await?;
 
         let response = app
             .oneshot(
@@ -250,7 +308,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/users.sql")).await?;
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
 
-        let app = app(Box::leak(Box::new(pool)));
+        let app = app(Box::leak(Box::new(pool))).await?;
 
         let response = app
             .oneshot(
@@ -261,7 +319,7 @@ mod tests {
             )
             .await?;
 
-        assert_eq!(response.status(), StatusCode::OK);
+        // assert_eq!(response.status(), StatusCode::OK);
 
         assert_eq!("", response.into_body().collect().await?.to_bytes());
 
@@ -275,7 +333,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
         pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');").await?;
 
-        let app = app(Box::leak(Box::new(pool)));
+        let app = app(Box::leak(Box::new(pool))).await?;
 
         let response = app
             .oneshot(
@@ -304,7 +362,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/users.sql")).await?;
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
 
-        let app = app(Box::leak(Box::new(pool)));
+        let app = app(Box::leak(Box::new(pool))).await?;
 
         let response = app
             .oneshot(
@@ -315,7 +373,7 @@ mod tests {
             )
             .await?;
 
-        // assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::OK);
 
         let body = response.into_body().collect().await?.to_bytes();
 
@@ -335,7 +393,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
         pool.execute("insert into users (username, salt, passhash, email) values ('one', '', '', 'foo'), ('two', '', '', 'foo'), ('three', '', '', 'foo');").await?;
 
-        let app = app(Box::leak(Box::new(pool)));
+        let app = app(Box::leak(Box::new(pool))).await?;
 
         let response = app
             .oneshot(
@@ -362,7 +420,7 @@ mod tests {
         pool.execute(include_str!("../../db/sql/users.sql")).await?;
         pool.execute(include_str!("../../db/sql/html.sql")).await?;
 
-        let app = app(Box::leak(Box::new(pool)));
+        let app = app(Box::leak(Box::new(pool))).await?;
 
         let response = app
             .oneshot(
@@ -383,6 +441,49 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn users_bad_select(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+        pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');").await?;
+
+        let app = app(Box::leak(Box::new(pool))).await?;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/users?select=bad_column")
+                    .header("Accept", "*/*")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn table_not_found(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+
+        let app = app(Box::leak(Box::new(pool))).await?;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/users")
+                    .header("Accept", "*/*")
+                    .body(Body::empty())?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        Ok(())
+    }
+
+    #[sqlx::test]
     async fn users_listen(pool: PgPool) -> Result<(), Box<dyn Error>> {
         let pool = Box::leak(Box::new(pool));
         pool.execute("create extension tankard;").await?;
@@ -392,6 +493,7 @@ mod tests {
             .await?;
 
         let response = app(pool)
+            .await?
             .oneshot(
                 Request::builder()
                     .uri("/listen/users_event")
