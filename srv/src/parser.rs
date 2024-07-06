@@ -14,7 +14,7 @@ mod tests {
     use super::query_select;
 
     #[test]
-    fn foo() -> Result<(), Box<dyn Error>> {
+    fn success() -> Result<(), Box<dyn Error>> {
         let (_, select) = query_select("select=username,email")?;
 
         assert_eq!(vec!["username", "email"], select);
