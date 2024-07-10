@@ -11,6 +11,7 @@ use axum::{
     Json, Router,
 };
 use axum_extra::TypedHeader;
+use mediatype::{media_type, MediaType};
 use serde::{Deserialize, Serialize};
 
 use crate::{internal_error, parser, AppState};
@@ -22,125 +23,129 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ApiQuery {
-    pub(crate) select: Vec<String>,
-}
+pub(crate) struct Select(Vec<String>);
 
 #[async_trait]
-impl<S> FromRequestParts<S> for ApiQuery {
+impl<S> FromRequestParts<S> for Select {
     type Rejection = String;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         match parts.uri.query().map(|query| parser::query_select(query)) {
-            Some(Ok((_, select))) => Ok(Self {
-                select: select.into_iter().map(|s| s.to_string()).collect(),
-            }),
+            Some(Ok((_, select))) => Ok(Self(select.into_iter().map(|s| s.to_string()).collect())),
             Some(Err(err)) => Err(err.to_string()),
-            None => Ok(Self { select: vec![] }),
+            None => Ok(Self(vec![])),
         }
     }
 }
 
+const MT_TEXT_HTML: MediaType = media_type!(TEXT / HTML);
+const MT_APPLICATION_JSON: MediaType = media_type!(APPLICATION / JSON);
+const MT_TEXT_CSV: MediaType = media_type!(TEXT / CSV);
+
+const AVAILABLE: &[MediaType] = &[MT_TEXT_HTML, MT_APPLICATION_JSON, MT_TEXT_CSV];
+
 pub(crate) async fn get_table(
     Path(table): Path<String>,
-    ApiQuery { select }: ApiQuery,
+    Select(select): Select,
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
     State(AppState { pool }): State<AppState>,
 ) -> Response {
-    if accept
-        .media_types()
-        .any(|mt| mt.to_string() == "application/json")
-    {
-        let select = if !select.is_empty() {
-            &format!(
-                "jsonb_build_object({})",
-                select
+    match accept.negotiate(AVAILABLE) {
+        Some(mt) if mt == &MT_APPLICATION_JSON => {
+            let select = if !select.is_empty() {
+                &format!(
+                    "jsonb_build_object({})",
+                    select
+                        .iter()
+                        .map(|s| format!("'{s}', {s}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            } else {
+                &table
+            };
+            sqlx::query_scalar::<_, serde_json::Value>(&format!(
+                "select coalesce(jsonb_agg({select}), 'null'::jsonb) from {table};"
+            ))
+            .fetch_one(pool)
+            .await
+            .map(Json)
+            .map_err(internal_error)
+            .into_response()
+        }
+        Some(mt) if mt == &MT_TEXT_CSV => {
+            let conn = match pool.acquire().await {
+                Ok(conn) => conn,
+                Err(err) => return internal_error(err).into_response(),
+            };
+
+            let select = if !select.is_empty() {
+                &select.join(",")
+            } else {
+                "*"
+            };
+
+            match Box::leak(Box::new(conn))
+                .copy_out_raw(&format!(
+                    "copy (select {select} from {table}) to stdout with csv header;"
+                ))
+                .await
+            {
+                Ok(stream) => Body::from_stream(stream).into_response(),
+                Err(err) => internal_error(err).into_response(),
+            }
+        }
+        Some(mt) if mt == &MT_TEXT_HTML => {
+            let head = if !select.is_empty() {
+                &select
                     .iter()
-                    .map(|s| format!("'{s}', {s}"))
+                    .map(|s| format!("'{s}'"))
                     .collect::<Vec<_>>()
                     .join(",")
-            )
-        } else {
-            &table
-        };
-        sqlx::query_scalar::<_, serde_json::Value>(&format!(
-            "select coalesce(jsonb_agg({select}), 'null'::jsonb) from {table};"
-        ))
-        .fetch_one(pool)
-        .await
-        .map(Json)
-        .map_err(internal_error)
-        .into_response()
-    } else if accept.media_types().any(|mt| mt.to_string() == "text/csv") {
-        let conn = match pool.acquire().await {
-            Ok(conn) => conn,
-            Err(err) => return internal_error(err).into_response(),
-        };
-
-        let select = if !select.is_empty() {
-            &select.join(",")
-        } else {
-            "*"
-        };
-
-        match Box::leak(Box::new(conn))
-            .copy_out_raw(&format!(
-                "copy (select {select} from {table}) to stdout with csv header;"
-            ))
-            .await
-        {
-            Ok(stream) => Body::from_stream(stream).into_response(),
-            Err(err) => internal_error(err).into_response(),
-        }
-    } else {
-        let head = if !select.is_empty() {
-            &select
-                .iter()
-                .map(|s| format!("'{s}'"))
-                .collect::<Vec<_>>()
-                .join(",")
-        } else {
-            let cols = sqlx::query_scalar!(
+            } else {
+                let cols = sqlx::query_scalar!(
                 "select column_name::text from information_schema.columns where table_name = $1;",
                 &table
             )
-            .fetch_all(pool)
-            .await
-            .map(|cols| {
-                cols.into_iter()
-                    .flatten()
-                    .map(|col| format!("'{col}'"))
+                .fetch_all(pool)
+                .await
+                .map(|cols| {
+                    cols.into_iter()
+                        .flatten()
+                        .map(|col| format!("'{col}'"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .map_err(internal_error);
+
+                &match cols {
+                    Ok(cols) => cols,
+                    Err(err) => return err.into_response(),
+                }
+            };
+
+            let select = if !select.is_empty() {
+                &select
+                    .iter()
+                    .map(|s| format!("{s}::text"))
                     .collect::<Vec<_>>()
                     .join(",")
-            })
-            .map_err(internal_error);
+            } else {
+                &table
+            };
 
-            &match cols {
-                Ok(cols) => cols,
-                Err(err) => return err.into_response(),
-            }
-        };
-
-        let select = if !select.is_empty() {
-            &select
-                .iter()
-                .map(|s| format!("{s}::text"))
-                .collect::<Vec<_>>()
-                .join(",")
-        } else {
-            &table
-        };
-
-        // TODO: support other keys than `id`
-        sqlx::query_scalar::<_, String>(&format!(
-            "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from {table})))));"
-        ))
-        .bind(include_str!("../../tmpl/table.html"))
-        .fetch_one(pool)
-        .await
-        .map(Html)
-        .map_err(internal_error)
-        .into_response()
+            // TODO: support other keys than `id`
+            sqlx::query_scalar::<_, String>(&format!(
+                "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from {table})))));"
+            ))
+            .bind(include_str!("../../tmpl/table.html"))
+            .fetch_one(pool)
+            .await
+            .map(Html)
+            .map_err(internal_error)
+            .into_response()
+        }
+        _ => StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response(),
     }
 }
 
@@ -152,7 +157,7 @@ pub(crate) struct Column {
 
 pub(crate) async fn mdw(
     Path(table): Path<String>,
-    ApiQuery { select }: ApiQuery,
+    Select(select): Select,
     request: Request,
     next: Next,
 ) -> Response {
@@ -204,7 +209,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username,email")
-                    .header("Accept", "*/*")
+                    .header("Accept", "text/html")
                     .body(Body::empty())?,
             )
             .await?;
@@ -230,7 +235,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username,email")
-                    .header("Accept", "*/*")
+                    .header("Accept", "text/html")
                     .body(Body::empty())?,
             )
             .await?;
@@ -366,7 +371,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=bad_column")
-                    .header("Accept", "*/*")
+                    .header("Accept", "text/html")
                     .body(Body::empty())?,
             )
             .await?;
@@ -386,7 +391,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users")
-                    .header("Accept", "*/*")
+                    .header("Accept", "text/html")
                     .body(Body::empty())?,
             )
             .await?;
