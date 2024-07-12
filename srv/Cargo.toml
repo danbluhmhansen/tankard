@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 axum = "0.7.5"
-axum-extra = { version = "0.9.3", features = ["typed-header"] }
+axum-extra = { version = "0.9.3", features = ["json-lines", "typed-header"] }
 axum-htmx = "0.6.0"
 futures = "0.3.30"
 headers-accept = "0.1.3"

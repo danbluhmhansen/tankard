@@ -8,9 +8,9 @@ use axum::{
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
-    Json, Router,
+    Router,
 };
-use axum_extra::TypedHeader;
+use axum_extra::{extract::JsonLines, TypedHeader};
 use mediatype::{media_type, MediaType};
 use serde::{Deserialize, Serialize};
 
@@ -64,14 +64,9 @@ pub(crate) async fn get_table(
             } else {
                 &table
             };
-            sqlx::query_scalar::<_, serde_json::Value>(&format!(
-                "select coalesce(jsonb_agg({select}), 'null'::jsonb) from {table};"
-            ))
-            .fetch_one(pool)
-            .await
-            .map(Json)
-            .map_err(internal_error)
-            .into_response()
+            let sql = Box::leak(Box::new(format!("select {select} from {table};")));
+            let stream = sqlx::query_scalar::<_, serde_json::Value>(sql).fetch(pool);
+            JsonLines::new(stream).into_response()
         }
         Some(mt) if mt == &MT_TEXT_CSV => {
             let conn = match pool.acquire().await {
@@ -265,11 +260,9 @@ mod tests {
             .await?;
 
         assert_eq!(response.status(), StatusCode::OK);
-
-        let body = response.into_body().collect().await?.to_bytes();
         assert_eq!(
-            serde_json::json!([{ "username": "one" }, { "username": "two" }, { "username": "three" }]),
-            serde_json::from_slice::<serde_json::Value>(&body)?
+            "{\"username\":\"one\"}\n{\"username\":\"two\"}\n{\"username\":\"three\"}\n",
+            response.into_body().collect().await?.to_bytes()
         );
 
         Ok(())
@@ -293,12 +286,7 @@ mod tests {
             .await?;
 
         assert_eq!(response.status(), StatusCode::OK);
-
-        let body = response.into_body().collect().await?.to_bytes();
-        assert_eq!(
-            serde_json::Value::Null,
-            serde_json::from_slice::<serde_json::Value>(&body)?
-        );
+        assert_eq!("", response.into_body().collect().await?.to_bytes());
 
         Ok(())
     }
