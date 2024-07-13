@@ -119,9 +119,32 @@ pub(crate) mod tests {
         let event_data = Spi::get_one::<pgrx::JsonB>("select data from users_events offset 1;")?;
 
         assert_eq!(
-            Some(serde_json::json!([{"op": "replace", "path": "", "value": null}])),
+            Some(serde_json::json!([{"op": "replace", "path": "", "value": {}}])),
             event_data.map(|data| data.0),
             "delete event should indicate the user has been deleted"
+        );
+
+        Ok(())
+    }
+
+    #[pg_test]
+    fn users_restore() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
+
+        let user_id = Spi::get_one::<pgrx::Uuid>(
+            "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
+        );
+        Spi::run("delete from users;")?;
+        Spi::run_with_args(
+            "insert into users (id, username, salt, passhash) values ($1, 'foo', '', '');",
+            Some(vec![(PgBuiltInOids::UUIDOID.oid(), user_id.into_datum())]),
+        )?;
+
+        assert_eq!(
+            Ok(Some(1)),
+            Spi::get_one::<i64>("select count(*) from users_streams;"),
+            "restoring a previously deleted user should result in using the existing users_stream"
         );
 
         Ok(())
@@ -184,6 +207,34 @@ pub(crate) mod tests {
     }
 
     #[pg_test]
+    fn users_ts_restored() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
+
+        let user_id = Spi::get_one::<pgrx::Uuid>(
+            "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
+        )?;
+        Spi::run("delete from users;")?;
+        Spi::run_with_args(
+            "insert into users (id, username, salt, passhash) values ($1, 'foo', '', '');",
+            Some(vec![(PgBuiltInOids::UUIDOID.oid(), user_id.into_datum())]),
+        )?;
+
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "select timestamp from users_events limit 1 offset 1",
+        )?;
+
+        let count = Spi::get_one_with_args::<i64>(
+            "select count(*) from users_ts($1);",
+            vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
+        );
+
+        assert_eq!(Ok(Some(0)), count);
+
+        Ok(())
+    }
+
+    #[pg_test]
     fn users_step() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
         Spi::run("select init_event_source('users');")?;
@@ -218,7 +269,7 @@ pub(crate) mod tests {
         Spi::run("update users set username = 'bar';")?;
 
         let updated = Spi::get_one_with_args::<pgrx::TimestampWithTimeZone>(
-            "select (users_commit).updated from (select users_commit(array_agg) from (select array_agg(users_ts) from users_ts($1)));",
+            "select updated from users_commit((select array_agg(users_ts) from users_ts($1)), (select array_agg(stream_id) from users_ts_del($1)));",
             vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
         )?;
 
@@ -254,7 +305,7 @@ pub(crate) mod tests {
         Spi::run("delete from users;")?;
 
         let updated = Spi::get_one_with_args::<pgrx::TimestampWithTimeZone>(
-            "select (users_commit).updated from (select users_commit(array_agg) from (select array_agg(users_ts) from users_ts($1)));",
+            "select updated from users_commit((select array_agg(users_ts) from users_ts($1)), (select array_agg(stream_id) from users_ts_del($1)));",
             vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
         )?;
 
@@ -275,6 +326,38 @@ pub(crate) mod tests {
             ])),
             event_data.map(|data| data.0),
             "commited user data should match the json patch data in the event"
+        );
+
+        Ok(())
+    }
+
+    #[pg_test]
+    fn users_ts_commit_restored() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
+
+        let user_id = Spi::get_one::<pgrx::Uuid>(
+            "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
+        )?;
+        Spi::run("delete from users;")?;
+        Spi::run_with_args(
+            "insert into users (id, username, salt, passhash) values ($1, 'foo', '', '');",
+            Some(vec![(PgBuiltInOids::UUIDOID.oid(), user_id.into_datum())]),
+        )?;
+
+        let ts = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "select timestamp from users_events limit 1 offset 1;",
+        )?;
+
+        Spi::run_with_args(
+            "select users_commit((select array_agg(users_ts) from users_ts($1)), (select array_agg(stream_id) from users_ts_del($1)));",
+            Some(vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())]),
+        )?;
+
+        assert_eq!(
+            Ok(Some(0)),
+            Spi::get_one::<i64>("select count(*) from users;"),
+            "users is restored to a deleted state, so it should be empty"
         );
 
         Ok(())

@@ -193,7 +193,7 @@ impl<'a> PgTable<'a> {
             declare stream_id uuid;
             begin
               select id into stream_id from {table}_streams where {del_trg_filter};
-              insert into {table}_events (stream_id, data) values (stream_id, '[{{"op":"replace","path":"","value":null}}]'::jsonb);
+              insert into {table}_events (stream_id, data) values (stream_id, '[{{"op":"replace","path":"","value":{{}}}}]'::jsonb);
               return old;
             end;
             $$;
@@ -216,12 +216,6 @@ impl<'a> PgTable<'a> {
             .keys
             .iter()
             .map(|&PgColumn { name, data_type: _ }| format!("'{name}', s.{table}_{name}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let group_by = self
-            .keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("s.{table}_{name}"))
             .collect::<Vec<_>>()
             .join(",");
         let ranked_data = self
@@ -254,22 +248,65 @@ impl<'a> PgTable<'a> {
             .map(|&PgColumn { name, data_type: _ }| name)
             .collect::<Vec<_>>()
             .join(",");
+        let stream_keys = self
+            .keys
+            .iter()
+            .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let del_streams = self
+            .keys
+            .iter()
+            .map(|&PgColumn { name, data_type: _ }| {
+                format!("{name} in (select {table}_{name} from streams)")
+            })
+            .collect::<Vec<_>>()
+            .join(" and ");
 
         Spi::run(&format!(
             r#"
-            create or replace function {table}_ts (ts timestamptz default now()) returns setof {table} language sql as $$
-              select jsonb_populate_record(
-                null::{table},
-                jsonb_build_object(
-                  {ts_pop},
-                  'added', first(timestamp order by timestamp),
-                  'updated', last(timestamp order by timestamp)
-                ) || jsonb_patch(data order by timestamp)
-              )
-              from {table}_events e
-              join {table}_streams s on s.id = e.stream_id
-              where timestamp <= ts
-              group by {group_by};
+            create or replace function {table}_ts (ts timestamptz default now()) returns setof {table} language sql
+            as $$
+                select
+                    jsonb_populate_record(
+                        null::{table},
+                        jsonb_build_object(
+                            {ts_pop},
+                            'added', e.added,
+                            'updated', e.updated
+                        ) || jsonb_patch('{{}}', e.data)
+                    )
+                from (
+                    select
+                        stream_id,
+                        first(timestamp order by timestamp) as added,
+                        last(timestamp order by timestamp) as updated,
+                        jsonb_agg(data order by timestamp) as data
+                    from (
+                        select timestamp, stream_id, jsonb_array_elements(data) as data
+                        from {table}_events
+                        where timestamp <= ts
+                    )
+                    group by stream_id
+                    having last(data order by timestamp) <> '{{"op": "replace", "path": "", "value": {{}}}}'
+                ) e
+                join {table}_streams s on s.id = e.stream_id;
+            $$;
+            "#,
+        ))?;
+
+        Spi::run(&format!(
+            r#"
+            create or replace function {table}_ts_del (ts timestamptz default now()) returns table (stream_id uuid)
+            language sql as $$
+                select stream_id
+                from (
+                    select timestamp, stream_id, jsonb_array_elements(data) as data
+                    from {table}_events
+                    where timestamp <= ts
+                )
+                group by stream_id
+                having last(data order by timestamp) = '{{"op": "replace", "path": "", "value": {{}}}}';
             $$;
             "#,
         ))?;
@@ -293,7 +330,7 @@ impl<'a> PgTable<'a> {
                   {step_pop},
                   'added', first(timestamp order by timestamp),
                   'updated', last(timestamp order by timestamp)
-                ) || jsonb_patch(data order by timestamp)
+                ) || jsonb_patch_agg(data order by timestamp)
               )
               from ranked_data
               where row_num <= row_sum - step
@@ -304,12 +341,24 @@ impl<'a> PgTable<'a> {
 
         Spi::run(&format!(
             r#"
-            create or replace function {table}_commit (commits {table}[]) returns setof {table} language sql as $$
-              with nest as (select * from unnest(commits))
-              insert into {table} select {keys}, added, clock_timestamp() as updated, {columns} from nest
-              on conflict ({keys}) do update set (updated, {columns}) =
-                (select clock_timestamp() as updated, {columns} from nest)
-              returning *;
+            create or replace function {table}_commit (
+                commits {table}[] default null,
+                stream_ids uuid[] default null
+            ) returns setof {table} language sql as $$
+                with nest as (select * from unnest(commits)),
+                streams as (
+                    select {stream_keys} from {table}_streams where id in (select unnest(stream_ids))
+                ),
+                ins as (
+                    insert into {table} select {keys}, added, clock_timestamp() as updated, {columns} from nest
+                    on conflict ({keys}) do update set (updated, {columns}) =
+                    (select clock_timestamp() as updated, {columns} from nest)
+                    returning *
+                ),
+                del as (
+                    delete from {table} where {del_streams} returning *
+                )
+                select * from ins union select * from del;
             $$;
             "#,
         ))?;
