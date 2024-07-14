@@ -153,18 +153,6 @@ impl<'a> PgTable<'a> {
                 primary key ("stream_id", "timestamp")
             );
             "#,
-        ))?;
-
-        Spi::run(&format!(
-            r#"
-            create table {table}_snaps (
-                "timestamp" timestamptz not null,
-                "stream_id" uuid        not null references {table}_streams ("id"),
-                "data"      jsonb       not null,
-                primary key ("stream_id", "timestamp"),
-                foreign key ("stream_id", "timestamp") references {table}_events ("stream_id", "timestamp")
-            );
-            "#,
         ))
     }
 
@@ -240,7 +228,6 @@ impl<'a> PgTable<'a> {
     fn create_functions(&self) -> Result<(), spi::Error> {
         let table = self.name;
         let keys = self.keys();
-        let json_strip_cols = self.json_strip_cols();
         let ts_pop = self
             .keys
             .iter()
@@ -253,16 +240,10 @@ impl<'a> PgTable<'a> {
             .chain(
                 std::iter::once(self.updated)
                     .flatten()
-                    .map(|a| format!("'{a}', e.{a}")),
+                    .map(|u| format!("'{u}', e.{u}")),
             )
             .collect::<Vec<_>>()
             .join(",");
-        let snaps_join = self
-            .keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("s.{table}_{name} = sn.{name}"))
-            .collect::<Vec<_>>()
-            .join(" and ");
         let columns = self
             .columns
             .iter()
@@ -399,6 +380,11 @@ impl<'a> PgTable<'a> {
         } else {
             "".to_string()
         };
+        let conflict_updated = if let Some(updated) = self.updated {
+            format!("{updated},")
+        } else {
+            "".to_string()
+        };
         Spi::run(&format!(
             r#"
             create or replace function {table}_commit (
@@ -411,28 +397,14 @@ impl<'a> PgTable<'a> {
                 ),
                 ins as (
                     insert into {table} select {keys}, {commit_added} {commit_updated} {columns} from nest
-                    on conflict ({keys}) do update set (updated, {columns}) =
-                    (select clock_timestamp() as updated, {columns} from nest)
+                    on conflict ({keys}) do update set ({conflict_updated} {columns}) =
+                    (select {commit_updated} {columns} from nest)
                     returning *
                 ),
                 del as (
                     delete from {table} where {del_streams} returning *
                 )
                 select * from ins union select * from del;
-            $$;
-            "#,
-        ))?;
-
-        Spi::run(&format!(
-            r#"
-            create or replace function {table}_snaps_commit (snaps {table}[]) returns setof {table}_snaps language sql
-            as $$
-              insert into {table}_snaps
-              select
-                  sn.updated,
-                  s.id,
-                  jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb(sn) - '{{{json_strip_cols}}}'::text[]))
-              from unnest(snaps) sn join {table}_streams s on {snaps_join} returning *;
             $$;
             "#,
         ))
@@ -497,7 +469,7 @@ fn refresh_event_functions(
 
 #[pg_extern]
 fn drop_event_source(table: &str) -> Result<(), spi::Error> {
-    Spi::run(&format!("drop function if exists {table}_snaps_commit({table}[]), {table}_commit({table}[]), {table}_step(int), {table}_ts(timestamptz), trg_{table}_del(), trg_{table}_upd(), trg_{table}_ins() cascade;"))
+    Spi::run(&format!("drop function if exists {table}_commit({table}[]), {table}_step(int), {table}_ts(timestamptz), trg_{table}_del(), trg_{table}_upd(), trg_{table}_ins() cascade;"))
 }
 
 #[cfg(any(test, feature = "pg_test"))]
@@ -521,5 +493,10 @@ mod tests {
     #[pg_test]
     fn composite_keys() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/composite_keys.sql"))
+    }
+
+    #[pg_test]
+    fn no_ts_cols() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/no_ts_cols.sql"))
     }
 }

@@ -459,38 +459,4 @@ pub(crate) mod tests {
 
         Ok(())
     }
-
-    #[pg_test]
-    fn users_snaps() -> Result<(), spi::Error> {
-        Spi::run(include_str!("../sql/users.sql"))?;
-        Spi::run("select init_event_source('users', 'added', 'updated');")?;
-
-        let (ts, username) =
-            Spi::get_two::<pgrx::TimestampWithTimeZone, &str>(
-                "insert into users (username, salt, passhash) values ('foo', '', '') returning updated, username;"
-            )?;
-        Spi::run("update users set username = 'bar';")?;
-
-        let (snap_ts, snap_data) = Spi::get_two_with_args::<pgrx::TimestampWithTimeZone, pgrx::JsonB>(
-            "select (users_snaps_commit).timestamp, (users_snaps_commit).data from (select users_snaps_commit(array_agg) from (select array_agg(users_ts) from users_ts($1)));",
-            vec![(PgBuiltInOids::TIMESTAMPTZOID.oid(), ts.into_datum())],
-        )?;
-
-        assert_eq!(
-            ts, snap_ts,
-            "snapped user timestamp should match snap timestamp"
-        );
-
-        assert_eq!(
-            Some(serde_json::json!([
-                { "op": "add", "path": "/passhash", "value": "" },
-                { "op": "add", "path": "/salt", "value": "" },
-                { "op": "add", "path": "/username", "value": username },
-            ])),
-            snap_data.map(|data| data.0),
-            "snapped user data should match the json patch data in the snap"
-        );
-
-        Ok(())
-    }
 }
