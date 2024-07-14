@@ -218,24 +218,6 @@ impl<'a> PgTable<'a> {
             .map(|&PgColumn { name, data_type: _ }| format!("'{name}', s.{table}_{name}"))
             .collect::<Vec<_>>()
             .join(",");
-        let ranked_data = self
-            .keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("s.{table}_{name} as {name}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let partition_by = self
-            .keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("s.{table}_{name}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let step_pop = self
-            .keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("'{name}', {name}"))
-            .collect::<Vec<_>>()
-            .join(",");
         let snaps_join = self
             .keys
             .iter()
@@ -314,27 +296,62 @@ impl<'a> PgTable<'a> {
         Spi::run(&format!(
             r#"
             create or replace function {table}_step (step int default 1) returns setof {table} language sql as $$
-              with ranked_data as (
                 select
-                  {ranked_data},
-                  timestamp,
-                  data,
-                  row_number() over (partition by {partition_by}) as row_num,
-                  count(*) over (partition by {partition_by}) as row_sum
-                from {table}_events e
-                join {table}_streams s on s.id = e.stream_id
-              )
-              select jsonb_populate_record(
-                null::{table},
-                jsonb_build_object(
-                  {step_pop},
-                  'added', first(timestamp order by timestamp),
-                  'updated', last(timestamp order by timestamp)
-                ) || jsonb_patch_agg(data order by timestamp)
-              )
-              from ranked_data
-              where row_num <= row_sum - step
-              group by {keys};
+                    jsonb_populate_record(
+                        null::{table},
+                        jsonb_build_object(
+                            {ts_pop},
+                            'added', e.added,
+                            'updated', e.updated
+                        ) || jsonb_patch('{{}}', e.data)
+                    )
+                from (
+                    select
+                        stream_id,
+                        first(timestamp order by timestamp) as added,
+                        last(timestamp order by timestamp) as updated,
+                        jsonb_agg(data order by timestamp) as data
+                    from (
+                        select timestamp, stream_id, jsonb_array_elements(data) as data
+                        from (
+                            select
+                                stream_id,
+                                timestamp,
+                                data,
+                                row_number() over (partition by stream_id) as row_num,
+                                count(*) over (partition by stream_id) as row_sum
+                            from {table}_events
+                        )
+                        where row_num <= row_sum - step
+                    )
+                    group by stream_id
+                    having last(data order by timestamp) <> '{{"op": "replace", "path": "", "value": {{}}}}'
+                ) e
+                join {table}_streams s on s.id = e.stream_id;
+            $$;
+            "#,
+        ))?;
+
+        Spi::run(&format!(
+            r#"
+            create or replace function {table}_step_del (step int default 1) returns table (stream_id uuid) language sql
+            as $$
+                select stream_id
+                from (
+                    select timestamp, stream_id, jsonb_array_elements(data) as data
+                    from (
+                        select
+                            stream_id,
+                            timestamp,
+                            data,
+                            row_number() over (partition by stream_id) as row_num,
+                            count(*) over (partition by stream_id) as row_sum
+                        from {table}_events
+                    )
+                    where row_num <= row_sum - step
+                )
+                group by stream_id
+                having last(data order by timestamp) = '{{"op": "replace", "path": "", "value": {{}}}}'
             $$;
             "#,
         ))?;

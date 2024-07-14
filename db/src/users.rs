@@ -375,7 +375,7 @@ pub(crate) mod tests {
         Spi::run("update users set username = 'bar';")?;
 
         let updated = Spi::get_one::<pgrx::TimestampWithTimeZone>(
-            "select (users_commit).updated from (select users_commit(array_agg) from (select array_agg(users_step) from users_step()));",
+            "select updated from users_commit((select array_agg(users_step) from users_step()), (select array_agg(users_step_del) from users_step_del()));",
         )?;
 
         let (event_ts, event_data) = Spi::get_two::<pgrx::TimestampWithTimeZone, pgrx::JsonB>(
@@ -393,6 +393,68 @@ pub(crate) mod tests {
             ])),
             event_data.map(|data| data.0),
             "commited user data should match the json patch data in the event"
+        );
+
+        Ok(())
+    }
+
+    #[pg_test]
+    fn users_step_commit_deleted() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
+
+        let username =
+            Spi::get_one::<&str>(
+                "insert into users (username, salt, passhash) values ('foo', '', '') returning username;"
+            )?;
+        Spi::run("delete from users;")?;
+
+        let updated = Spi::get_one::<pgrx::TimestampWithTimeZone>(
+            "select updated from users_commit((select array_agg(users_step) from users_step()), (select array_agg(users_step_del) from users_step_del()));",
+        )?;
+
+        let (event_ts, event_data) = Spi::get_two::<pgrx::TimestampWithTimeZone, pgrx::JsonB>(
+            "select timestamp, data from users_events offset 2;",
+        )?;
+
+        assert_eq!(
+            updated, event_ts,
+            "commited user timestamp should match event timestamp"
+        );
+
+        assert_eq!(
+            Some(serde_json::json!([
+                { "op": "add", "path": "/passhash", "value": "" },
+                { "op": "add", "path": "/salt", "value": "" },
+                { "op": "add", "path": "/username", "value": username },
+            ])),
+            event_data.map(|data| data.0),
+            "commited user data should match the json patch data in the event"
+        );
+
+        Ok(())
+    }
+
+    #[pg_test]
+    fn users_step_commit_restored() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users');")?;
+
+        let user_id = Spi::get_one::<pgrx::Uuid>(
+            "insert into users (username, salt, passhash) values ('foo', '', '') returning id;",
+        )?;
+        Spi::run("delete from users;")?;
+        Spi::run_with_args(
+            "insert into users (id, username, salt, passhash) values ($1, 'foo', '', '');",
+            Some(vec![(PgBuiltInOids::UUIDOID.oid(), user_id.into_datum())]),
+        )?;
+
+        Spi::run("select users_commit((select array_agg(users_step) from users_step()), (select array_agg(users_step_del) from users_step_del()));")?;
+
+        assert_eq!(
+            Ok(Some(0)),
+            Spi::get_one::<i64>("select count(*) from users;"),
+            "users is restored to a deleted state, so it should be empty"
         );
 
         Ok(())
