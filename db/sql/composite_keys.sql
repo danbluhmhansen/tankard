@@ -7,4 +7,4 @@ create table test_table (
   primary key (id1, id2)
 );
 
-select init_event_source('test_table');
+select init_event_source('test_table', 'added', 'updated');

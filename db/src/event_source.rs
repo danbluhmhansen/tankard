@@ -11,6 +11,8 @@ struct PgTable<'a> {
     name: &'a str,
     keys: Vec<PgColumn<'a>>,
     columns: Vec<PgColumn<'a>>,
+    added: Option<&'a str>,
+    updated: Option<&'a str>,
 }
 
 impl TryFrom<SpiHeapTupleData<'_>> for PgColumn<'_> {
@@ -52,13 +54,35 @@ impl<'a> PgTable<'a> {
                     .filter_map(|row| row.try_into().ok())
                     .collect())
             })?,
+            added: None,
+            updated: None,
         })
+    }
+
+    fn added(mut self, added: &'a str) -> Self {
+        self.added = Some(added);
+        self
+    }
+
+    fn updated(mut self, updated: &'a str) -> Self {
+        self.updated = Some(updated);
+        self
     }
 
     fn keys(&self) -> String {
         self.keys
             .iter()
             .map(|&PgColumn { name, data_type: _ }| name)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn json_strip_cols(&self) -> String {
+        self.keys
+            .iter()
+            .map(|&PgColumn { name, data_type: _ }| name)
+            .chain(std::iter::once(self.added).flatten())
+            .chain(std::iter::once(self.updated).flatten())
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -123,10 +147,10 @@ impl<'a> PgTable<'a> {
         Spi::run(&format!(
             r#"
             create table {table}_events (
-              "timestamp" timestamptz not null default clock_timestamp(),
-              "stream_id" uuid        not null references {table}_streams ("id"),
-              "data"      jsonb       not null,
-              primary key ("stream_id", "timestamp")
+                "timestamp" timestamptz not null default clock_timestamp(),
+                "stream_id" uuid        not null references {table}_streams ("id"),
+                "data"      jsonb       not null,
+                primary key ("stream_id", "timestamp")
             );
             "#,
         ))?;
@@ -134,11 +158,11 @@ impl<'a> PgTable<'a> {
         Spi::run(&format!(
             r#"
             create table {table}_snaps (
-              "timestamp" timestamptz not null,
-              "stream_id" uuid        not null references {table}_streams ("id"),
-              "data"      jsonb       not null,
-              primary key ("stream_id", "timestamp"),
-              foreign key ("stream_id", "timestamp") references {table}_events ("stream_id", "timestamp")
+                "timestamp" timestamptz not null,
+                "stream_id" uuid        not null references {table}_streams ("id"),
+                "data"      jsonb       not null,
+                primary key ("stream_id", "timestamp"),
+                foreign key ("stream_id", "timestamp") references {table}_events ("stream_id", "timestamp")
             );
             "#,
         ))
@@ -146,7 +170,7 @@ impl<'a> PgTable<'a> {
 
     fn create_triggers(&self) -> Result<(), spi::Error> {
         let table = self.name;
-        let keys = self.keys();
+        let json_strip_cols = self.json_strip_cols();
         let stream_keys = self.stream_keys();
         let trigger_values = self.trigger_values();
         let trigger_filter = self.trigger_filter();
@@ -157,13 +181,17 @@ impl<'a> PgTable<'a> {
             create or replace function trg_{table}_ins () returns trigger language plpgsql as $$
             declare stream_id uuid;
             begin
-              insert into {table}_streams ({stream_keys}) values ({trigger_values}) on conflict ({stream_keys}) do nothing returning id into stream_id;
-              if stream_id is null then
-                select id into stream_id from {table}_streams where {trigger_filter};
-              end if;
-              insert into {table}_events values
-                (new.updated, stream_id, jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb(new) - '{{{keys},added,updated}}'::text[])));
-              return new;
+                insert into {table}_streams ({stream_keys}) values ({trigger_values})
+                    on conflict ({stream_keys}) do nothing returning id into stream_id;
+                if stream_id is null then
+                    select id into stream_id from {table}_streams where {trigger_filter};
+                end if;
+                insert into {table}_events values (
+                    new.updated,
+                    stream_id,
+                    jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb(new) - '{{{json_strip_cols}}}'::text[]))
+                );
+                return new;
             end;
             $$;
             "#,
@@ -174,14 +202,13 @@ impl<'a> PgTable<'a> {
             create or replace function trg_{table}_upd () returns trigger language plpgsql as $$
             declare stream_id uuid;
             begin
-              new.updated := clock_timestamp();
-              select id into stream_id from {table}_streams where {trigger_filter};
-              insert into {table}_events values
-                (new.updated, stream_id, jsonb_diff(
-                  jsonb_strip_nulls(to_jsonb(old) - '{{{keys},added,updated}}'::text[]),
-                  jsonb_strip_nulls(to_jsonb(new) - '{{{keys},added,updated}}'::text[])
+                new.updated := clock_timestamp();
+                select id into stream_id from {table}_streams where {trigger_filter};
+                insert into {table}_events values (new.updated, stream_id, jsonb_diff(
+                    jsonb_strip_nulls(to_jsonb(old) - '{{{json_strip_cols}}}'::text[]),
+                    jsonb_strip_nulls(to_jsonb(new) - '{{{json_strip_cols}}}'::text[])
                 ));
-              return new;
+                return new;
             end;
             $$;
             "#,
@@ -192,9 +219,10 @@ impl<'a> PgTable<'a> {
             create or replace function trg_{table}_del () returns trigger language plpgsql as $$
             declare stream_id uuid;
             begin
-              select id into stream_id from {table}_streams where {del_trg_filter};
-              insert into {table}_events (stream_id, data) values (stream_id, '[{{"op":"replace","path":"","value":{{}}}}]'::jsonb);
-              return old;
+                select id into stream_id from {table}_streams where {del_trg_filter};
+                insert into {table}_events (stream_id, data) values
+                    (stream_id, '[{{"op":"replace","path":"","value":{{}}}}]'::jsonb);
+                return old;
             end;
             $$;
             "#,
@@ -212,10 +240,21 @@ impl<'a> PgTable<'a> {
     fn create_functions(&self) -> Result<(), spi::Error> {
         let table = self.name;
         let keys = self.keys();
+        let json_strip_cols = self.json_strip_cols();
         let ts_pop = self
             .keys
             .iter()
             .map(|&PgColumn { name, data_type: _ }| format!("'{name}', s.{table}_{name}"))
+            .chain(
+                std::iter::once(self.added)
+                    .flatten()
+                    .map(|a| format!("'{a}', e.{a}")),
+            )
+            .chain(
+                std::iter::once(self.updated)
+                    .flatten()
+                    .map(|a| format!("'{a}', e.{a}")),
+            )
             .collect::<Vec<_>>()
             .join(",");
         let snaps_join = self
@@ -244,6 +283,16 @@ impl<'a> PgTable<'a> {
             })
             .collect::<Vec<_>>()
             .join(" and ");
+        let added = if let Some(added) = self.added {
+            format!("first(timestamp order by timestamp) as {added},")
+        } else {
+            "".to_string()
+        };
+        let updated = if let Some(updated) = self.updated {
+            format!("last(timestamp order by timestamp) as {updated},")
+        } else {
+            "".to_string()
+        };
 
         Spi::run(&format!(
             r#"
@@ -252,18 +301,10 @@ impl<'a> PgTable<'a> {
                 select
                     jsonb_populate_record(
                         null::{table},
-                        jsonb_build_object(
-                            {ts_pop},
-                            'added', e.added,
-                            'updated', e.updated
-                        ) || jsonb_patch('{{}}', e.data)
+                        jsonb_build_object({ts_pop}) || jsonb_patch('{{}}', e.data)
                     )
                 from (
-                    select
-                        stream_id,
-                        first(timestamp order by timestamp) as added,
-                        last(timestamp order by timestamp) as updated,
-                        jsonb_agg(data order by timestamp) as data
+                    select stream_id,{added}{updated}jsonb_agg(data order by timestamp) as data
                     from (
                         select timestamp, stream_id, jsonb_array_elements(data) as data
                         from {table}_events
@@ -299,18 +340,10 @@ impl<'a> PgTable<'a> {
                 select
                     jsonb_populate_record(
                         null::{table},
-                        jsonb_build_object(
-                            {ts_pop},
-                            'added', e.added,
-                            'updated', e.updated
-                        ) || jsonb_patch('{{}}', e.data)
+                        jsonb_build_object({ts_pop}) || jsonb_patch('{{}}', e.data)
                     )
                 from (
-                    select
-                        stream_id,
-                        first(timestamp order by timestamp) as added,
-                        last(timestamp order by timestamp) as updated,
-                        jsonb_agg(data order by timestamp) as data
+                    select stream_id,{added}{updated}jsonb_agg(data order by timestamp) as data
                     from (
                         select timestamp, stream_id, jsonb_array_elements(data) as data
                         from (
@@ -356,6 +389,16 @@ impl<'a> PgTable<'a> {
             "#,
         ))?;
 
+        let commit_added = if let Some(added) = self.added {
+            format!("{added},")
+        } else {
+            "".to_string()
+        };
+        let commit_updated = if let Some(updated) = self.updated {
+            format!("clock_timestamp() as {updated},")
+        } else {
+            "".to_string()
+        };
         Spi::run(&format!(
             r#"
             create or replace function {table}_commit (
@@ -367,7 +410,7 @@ impl<'a> PgTable<'a> {
                     select {stream_keys} from {table}_streams where id in (select unnest(stream_ids))
                 ),
                 ins as (
-                    insert into {table} select {keys}, added, clock_timestamp() as updated, {columns} from nest
+                    insert into {table} select {keys}, {commit_added} {commit_updated} {columns} from nest
                     on conflict ({keys}) do update set (updated, {columns}) =
                     (select clock_timestamp() as updated, {columns} from nest)
                     returning *
@@ -382,9 +425,13 @@ impl<'a> PgTable<'a> {
 
         Spi::run(&format!(
             r#"
-            create or replace function {table}_snaps_commit (snaps {table}[]) returns setof {table}_snaps language sql as $$
+            create or replace function {table}_snaps_commit (snaps {table}[]) returns setof {table}_snaps language sql
+            as $$
               insert into {table}_snaps
-              select sn.updated, s.id, jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb(sn) - '{{{keys},added,updated}}'::text[]))
+              select
+                  sn.updated,
+                  s.id,
+                  jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb(sn) - '{{{json_strip_cols}}}'::text[]))
               from unnest(snaps) sn join {table}_streams s on {snaps_join} returning *;
             $$;
             "#,
@@ -393,22 +440,59 @@ impl<'a> PgTable<'a> {
 }
 
 #[pg_extern]
-fn init_event_source(table: &str) -> Result<(), spi::Error> {
-    let primary_keys = PgTable::new(table)?;
+fn init_event_source(
+    table: &str,
+    added: default!(&str, "''"),
+    updated: default!(&str, "''"),
+) -> Result<(), spi::Error> {
+    let mut table = PgTable::new(table)?;
 
-    primary_keys.create_tables()?;
-    primary_keys.create_triggers()?;
-    primary_keys.create_functions()
+    if !added.is_empty() {
+        table = table.added(added);
+    }
+    if !updated.is_empty() {
+        table = table.updated(updated);
+    }
+
+    table.create_tables()?;
+    table.create_triggers()?;
+    table.create_functions()
 }
 
 #[pg_extern]
-fn refresh_event_triggers(table: &str) -> Result<(), spi::Error> {
-    PgTable::new(table)?.create_triggers()
+fn refresh_event_triggers(
+    table: &str,
+    added: default!(&str, "''"),
+    updated: default!(&str, "''"),
+) -> Result<(), spi::Error> {
+    let mut table = PgTable::new(table)?;
+
+    if !added.is_empty() {
+        table = table.added(added);
+    }
+    if !updated.is_empty() {
+        table = table.updated(updated);
+    }
+
+    table.create_triggers()
 }
 
 #[pg_extern]
-fn refresh_event_functions(table: &str) -> Result<(), spi::Error> {
-    PgTable::new(table)?.create_functions()
+fn refresh_event_functions(
+    table: &str,
+    added: default!(&str, "''"),
+    updated: default!(&str, "''"),
+) -> Result<(), spi::Error> {
+    let mut table = PgTable::new(table)?;
+
+    if !added.is_empty() {
+        table = table.added(added);
+    }
+    if !updated.is_empty() {
+        table = table.updated(updated);
+    }
+
+    table.create_functions()
 }
 
 #[pg_extern]
@@ -422,8 +506,15 @@ mod tests {
     use pgrx::prelude::*;
 
     #[pg_test]
+    fn users_init_event_source() -> Result<(), spi::Error> {
+        Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users', 'added', 'updated');")
+    }
+
+    #[pg_test]
     fn users_drop_event_source() -> Result<(), spi::Error> {
         Spi::run(include_str!("../sql/users.sql"))?;
+        Spi::run("select init_event_source('users', 'added', 'updated');")?;
         Spi::run("select drop_event_source('users');")
     }
 
