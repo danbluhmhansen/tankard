@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use pgrx::{prelude::*, spi::SpiHeapTupleData};
 
 #[derive(Debug)]
@@ -69,22 +70,30 @@ impl<'a> PgTable<'a> {
         self
     }
 
-    fn keys(&self) -> String {
-        self.keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| name)
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-
-    fn json_strip_cols(&self) -> String {
+    fn keys_ts_iter(&self) -> impl Iterator<Item = &str> {
         self.keys
             .iter()
             .map(|&PgColumn { name, data_type: _ }| name)
             .chain(std::iter::once(self.added).flatten())
             .chain(std::iter::once(self.updated).flatten())
-            .collect::<Vec<_>>()
+    }
+
+    fn keys(&self) -> String {
+        self.keys
+            .iter()
+            .map(|&PgColumn { name, data_type: _ }| name)
             .join(",")
+    }
+
+    fn columns(&self) -> String {
+        self.columns
+            .iter()
+            .map(|&PgColumn { name, data_type: _ }| name)
+            .join(",")
+    }
+
+    fn keys_ts(&self) -> String {
+        self.keys_ts_iter().join(",")
     }
 
     fn stream_columns(&self) -> String {
@@ -92,7 +101,6 @@ impl<'a> PgTable<'a> {
         self.keys
             .iter()
             .map(|&PgColumn { name, data_type }| format!("{table}_{name} {data_type} not null",))
-            .collect::<Vec<_>>()
             .join(", ")
     }
 
@@ -101,34 +109,41 @@ impl<'a> PgTable<'a> {
         self.keys
             .iter()
             .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name}"))
-            .collect::<Vec<_>>()
             .join(",")
+    }
+
+    fn stream_filter(&self, prefix: &str) -> String {
+        let table = self.name;
+        self.keys
+            .iter()
+            .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name} = {prefix}.{name}"))
+            .join(" and ")
     }
 
     fn trigger_values(&self) -> String {
         self.keys
             .iter()
             .map(|&PgColumn { name, data_type: _ }| format!("new.{name}"))
-            .collect::<Vec<_>>()
             .join(",")
     }
 
-    fn trigger_filter(&self) -> String {
+    fn json_build_object(&self) -> String {
         let table = self.name;
         self.keys
             .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name} = new.{name}"))
+            .map(|&PgColumn { name, data_type: _ }| format!("'{name}', s.{table}_{name}"))
+            .chain(
+                std::iter::once(self.added)
+                    .flatten()
+                    .map(|a| format!("'{a}', e.{a}")),
+            )
+            .chain(
+                std::iter::once(self.updated)
+                    .flatten()
+                    .map(|u| format!("'{u}', e.{u}")),
+            )
             .collect::<Vec<_>>()
-            .join(" and ")
-    }
-
-    fn delete_trigger_filter(&self) -> String {
-        let table = self.name;
-        self.keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name} = old.{name}"))
-            .collect::<Vec<_>>()
-            .join(" and ")
+            .join(",")
     }
 
     fn create_tables(&self) -> Result<(), spi::Error> {
@@ -158,11 +173,11 @@ impl<'a> PgTable<'a> {
 
     fn create_triggers(&self) -> Result<(), spi::Error> {
         let table = self.name;
-        let json_strip_cols = self.json_strip_cols();
+        let keys_ts = self.keys_ts();
         let stream_keys = self.stream_keys();
         let trigger_values = self.trigger_values();
-        let trigger_filter = self.trigger_filter();
-        let del_trg_filter = self.delete_trigger_filter();
+        let stream_filter_new = self.stream_filter("new");
+        let stream_filter_old = self.stream_filter("old");
 
         Spi::run(&format!(
             r#"
@@ -172,12 +187,12 @@ impl<'a> PgTable<'a> {
                 insert into {table}_streams ({stream_keys}) values ({trigger_values})
                     on conflict ({stream_keys}) do nothing returning id into stream_id;
                 if stream_id is null then
-                    select id into stream_id from {table}_streams where {trigger_filter};
+                    select id into stream_id from {table}_streams where {stream_filter_new};
                 end if;
                 insert into {table}_events values (
                     new.updated,
                     stream_id,
-                    jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb(new) - '{{{json_strip_cols}}}'::text[]))
+                    jsonb_diff('{{}}'::jsonb, jsonb_strip_nulls(to_jsonb(new) - '{{{keys_ts}}}'::text[]))
                 );
                 return new;
             end;
@@ -191,10 +206,10 @@ impl<'a> PgTable<'a> {
             declare stream_id uuid;
             begin
                 new.updated := clock_timestamp();
-                select id into stream_id from {table}_streams where {trigger_filter};
+                select id into stream_id from {table}_streams where {stream_filter_new};
                 insert into {table}_events values (new.updated, stream_id, jsonb_diff(
-                    jsonb_strip_nulls(to_jsonb(old) - '{{{json_strip_cols}}}'::text[]),
-                    jsonb_strip_nulls(to_jsonb(new) - '{{{json_strip_cols}}}'::text[])
+                    jsonb_strip_nulls(to_jsonb(old) - '{{{keys_ts}}}'::text[]),
+                    jsonb_strip_nulls(to_jsonb(new) - '{{{keys_ts}}}'::text[])
                 ));
                 return new;
             end;
@@ -207,7 +222,7 @@ impl<'a> PgTable<'a> {
             create or replace function trg_{table}_del () returns trigger language plpgsql as $$
             declare stream_id uuid;
             begin
-                select id into stream_id from {table}_streams where {del_trg_filter};
+                select id into stream_id from {table}_streams where {stream_filter_old};
                 insert into {table}_events (stream_id, data) values
                     (stream_id, '[{{"op":"replace","path":"","value":{{}}}}]'::jsonb);
                 return old;
@@ -228,41 +243,15 @@ impl<'a> PgTable<'a> {
     fn create_functions(&self) -> Result<(), spi::Error> {
         let table = self.name;
         let keys = self.keys();
-        let ts_pop = self
-            .keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("'{name}', s.{table}_{name}"))
-            .chain(
-                std::iter::once(self.added)
-                    .flatten()
-                    .map(|a| format!("'{a}', e.{a}")),
-            )
-            .chain(
-                std::iter::once(self.updated)
-                    .flatten()
-                    .map(|u| format!("'{u}', e.{u}")),
-            )
-            .collect::<Vec<_>>()
-            .join(",");
-        let columns = self
-            .columns
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| name)
-            .collect::<Vec<_>>()
-            .join(",");
-        let stream_keys = self
-            .keys
-            .iter()
-            .map(|&PgColumn { name, data_type: _ }| format!("{table}_{name}"))
-            .collect::<Vec<_>>()
-            .join(",");
+        let json_build_object = self.json_build_object();
+        let columns = self.columns();
+        let stream_keys = self.stream_keys();
         let del_streams = self
             .keys
             .iter()
             .map(|&PgColumn { name, data_type: _ }| {
                 format!("{name} in (select {table}_{name} from streams)")
             })
-            .collect::<Vec<_>>()
             .join(" and ");
         let added = if let Some(added) = self.added {
             format!("first(timestamp order by timestamp) as {added},")
@@ -282,7 +271,7 @@ impl<'a> PgTable<'a> {
                 select
                     jsonb_populate_record(
                         null::{table},
-                        jsonb_build_object({ts_pop}) || jsonb_patch('{{}}', e.data)
+                        jsonb_build_object({json_build_object}) || jsonb_patch('{{}}', e.data)
                     )
                 from (
                     select stream_id,{added}{updated}jsonb_agg(data order by timestamp) as data
@@ -321,7 +310,7 @@ impl<'a> PgTable<'a> {
                 select
                     jsonb_populate_record(
                         null::{table},
-                        jsonb_build_object({ts_pop}) || jsonb_patch('{{}}', e.data)
+                        jsonb_build_object({json_build_object}) || jsonb_patch('{{}}', e.data)
                     )
                 from (
                     select stream_id,{added}{updated}jsonb_agg(data order by timestamp) as data

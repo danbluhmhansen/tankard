@@ -20,6 +20,7 @@ pg16 = ["pgrx/pg16", "pgrx-tests/pg16" ]
 pg_test = []
 
 [dependencies]
+itertools = "0.13.0"
 json-patch = "2.0.0"
 minify-html-onepass = "0.15.0"
 minijinja = "2.0.3"
