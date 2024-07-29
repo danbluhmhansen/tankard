@@ -1,23 +1,60 @@
-use nom::{
-    bytes::complete::tag, character::complete::alphanumeric1, multi::separated_list0,
-    sequence::preceded,
+use std::str::FromStr;
+
+use winnow::{
+    combinator::{preceded, separated},
+    stream::AsChar,
+    token::take_while,
+    PResult, Parser,
 };
 
-pub(crate) fn query_select(input: &str) -> nom::IResult<&str, Vec<&str>> {
-    preceded(tag("select="), separated_list0(tag(","), alphanumeric1))(input)
+use crate::api::Select;
+
+impl Select {
+    fn parse(input: &mut &str) -> PResult<Self> {
+        preceded(
+            "select=",
+            separated(
+                0..,
+                take_while(0.., |c: char| c.is_alphanum() || c == '_'),
+                ",",
+            )
+            .map(|v: Vec<&str>| Self(v.iter().map(|s| s.to_string()).collect())),
+        )
+        .parse_next(input)
+    }
+}
+
+impl FromStr for Select {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse.parse(s).map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use std::{error::Error, str::FromStr};
 
-    use super::query_select;
+    use crate::api::Select;
 
     #[test]
-    fn success() -> Result<(), Box<dyn Error>> {
-        let (_, select) = query_select("select=username,email")?;
+    fn single() -> Result<(), Box<dyn Error>> {
+        let select = Select::from_str("select=username")?;
 
-        assert_eq!(vec!["username", "email"], select);
+        assert_eq!(Select(vec!["username".to_string()]), select);
+
+        Ok(())
+    }
+
+    #[test]
+    fn multiple() -> Result<(), Box<dyn Error>> {
+        let select = Select::from_str("select=username,email")?;
+
+        assert_eq!(
+            Select(vec!["username".to_string(), "email".to_string()]),
+            select
+        );
 
         Ok(())
     }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use axum::{
     async_trait,
@@ -14,7 +14,7 @@ use axum_extra::{extract::JsonLines, TypedHeader};
 use mediatype::{media_type, MediaType};
 use serde::{Deserialize, Serialize};
 
-use crate::{internal_error, parser, AppState};
+use crate::{internal_error, AppState};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -22,16 +22,16 @@ pub(crate) fn router() -> Router<AppState> {
         .layer(middleware::from_fn(mdw))
 }
 
-#[derive(Debug)]
-pub(crate) struct Select(Vec<String>);
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Select(pub(crate) Vec<String>);
 
 #[async_trait]
 impl<S> FromRequestParts<S> for Select {
     type Rejection = String;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        match parts.uri.query().map(|query| parser::query_select(query)) {
-            Some(Ok((_, select))) => Ok(Self(select.into_iter().map(|s| s.to_string()).collect())),
+        match parts.uri.query().map(Select::from_str) {
+            Some(Ok(select)) => Ok(select),
             Some(Err(err)) => Err(err.to_string()),
             None => Ok(Self(vec![])),
         }
@@ -365,6 +365,10 @@ mod tests {
             .await?;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.into_body().collect().await?.to_bytes(),
+            "bad_column"
+        );
 
         Ok(())
     }
