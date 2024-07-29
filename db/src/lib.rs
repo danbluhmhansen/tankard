@@ -1,10 +1,6 @@
 ::pgrx::pg_module_magic!();
 
-mod event_source;
-mod first_last;
 mod html;
-mod json;
-mod users;
 
 /// This module is required by `cargo pgrx test` invocations.
 /// It must be visible at the root of your extension crate.
