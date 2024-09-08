@@ -1,7 +1,8 @@
 [package]
 name = "tankard"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -21,9 +22,9 @@ pg_test = []
 
 [dependencies]
 minify-html-onepass = "0.15.0"
-minijinja = "2.0.3"
-pgrx = "=0.12.0-beta.3"
-serde_json = "1.0.120"
+minijinja = "2.2.0"
+pgrx = "=0.12.2"
+serde_json = "1.0.128"
 
 [dev-dependencies]
-pgrx-tests = "=0.12.0-beta.3"
+pgrx-tests = "=0.12.2"

@@ -2,6 +2,13 @@
 members = ["db", "srv"]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.metadata.crane]
+name = "tankard"
+
 [profile.dev]
 panic = "unwind"
 

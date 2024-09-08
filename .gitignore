@@ -10,5 +10,11 @@ Cargo.lock
 .idea/
 *.iml
 
+# direnv
+.direnv
+
+# crane
+result*
+
 # tankard
 dist/
