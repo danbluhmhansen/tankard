@@ -23,8 +23,8 @@ pg_test = []
 [dependencies]
 minify-html-onepass = "0.15.0"
 minijinja = "2.2.0"
-pgrx = "=0.12.2"
+pgrx = "=0.12.4"
 serde_json = "1.0.128"
 
 [dev-dependencies]
-pgrx-tests = "=0.12.2"
+pgrx-tests = "=0.12.4"

@@ -21,7 +21,7 @@ winnow = "0.6.18"
 [dev-dependencies]
 http-body-util = "0.1.2"
 scraper = "0.20.0"
-tower = { version = "0.5.0", features = ["util"] }
+tower = { version = "0.5.1", features = ["util"] }
 
 [build-dependencies]
 ureq = "2.10.1"
