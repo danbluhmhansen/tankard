@@ -6,13 +6,13 @@ create or replace function html(text) returns text language sql as $$
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
         <title>Tankard</title>
-        <link rel="stylesheet" href="pico.css" />
+        <link rel="stylesheet" href="simple.css" />
         <script src="htmx.js"></script>
         <script src="sse.js"></script>
       </head>
       <body>
         <header></header>
-        <main class="container">%s</main>
+        <main>%s</main>
         <footer></footer>
       </body>
     </html>
@@ -21,8 +21,8 @@ $$;
 
 create or replace function html_index() returns text language sql as $$
   select html($html$
-    <div hx-ext="sse" sse-connect="/users_listen">
-      <div hx-trigger="sse:users_event, revealed" hx-get="/users?select=id,username"></div>
+    <div hx-ext="sse" sse-connect="/listen/users_event">
+      <div hx-trigger="sse:users_event, revealed" hx-get="/api/users?select=id,username"></div>
     </div>
   $html$);
 $$;
