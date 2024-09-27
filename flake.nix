@@ -132,7 +132,7 @@
         checks = self.checks.${system};
 
         # Additional dev-shell environment variables can be set directly
-        DATABASE_URL = "postgres://localhost:28816/tankard";
+        DATABASE_URL = "postgres://localhost:28817/tankard";
 
         # Extra inputs can be added here; cargo and rustc are provided by default.
         packages = with pkgs; [
