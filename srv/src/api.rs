@@ -2,15 +2,16 @@ use std::{collections::HashMap, str::FromStr};
 
 use axum::{
     async_trait,
-    body::Body,
+    body::{Body, Bytes},
     extract::{FromRequestParts, Path, Request, State},
-    http::{request::Parts, StatusCode},
+    http::{header::CONTENT_TYPE, request::Parts, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
-    Router,
+    Extension, Router,
 };
 use axum_extra::{extract::JsonLines, TypedHeader};
+use itertools::Itertools;
 use mediatype::{media_type, MediaType};
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +19,7 @@ use crate::{internal_error, AppState};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
-        .route("/", get(get_table))
+        .route("/", get(get_table).post(set_table))
         .layer(middleware::from_fn(mdw))
 }
 
@@ -49,17 +50,14 @@ pub(crate) async fn get_table(
     Select(select): Select,
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
     State(AppState { pool }): State<AppState>,
+    Extension(tables): Extension<HashMap<String, Vec<Column>>>,
 ) -> Response {
     match accept.negotiate(AVAILABLE) {
         Some(mt) if mt == &MT_APPLICATION_JSON => {
             let select = if !select.is_empty() {
                 &format!(
                     "jsonb_build_object({})",
-                    select
-                        .iter()
-                        .map(|s| format!("'{s}', {s}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    select.iter().map(|s| format!("'{s}', {s}")).join(",")
                 )
             } else {
                 &table
@@ -92,39 +90,19 @@ pub(crate) async fn get_table(
         }
         Some(mt) if mt == &MT_TEXT_HTML => {
             let head = if !select.is_empty() {
-                &select
-                    .iter()
-                    .map(|s| format!("'{s}'"))
-                    .collect::<Vec<_>>()
-                    .join(",")
+                select.iter().map(|s| format!("'{s}'")).join(",")
             } else {
-                let cols = sqlx::query_scalar!(
-                "select column_name::text from information_schema.columns where table_name = $1;",
-                &table
-            )
-                .fetch_all(pool)
-                .await
-                .map(|cols| {
-                    cols.into_iter()
-                        .flatten()
-                        .map(|col| format!("'{col}'"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                })
-                .map_err(internal_error);
-
-                &match cols {
-                    Ok(cols) => cols,
-                    Err(err) => return err.into_response(),
-                }
+                let cols = match tables.get(&table) {
+                    Some(cols) => cols,
+                    None => return StatusCode::NOT_FOUND.into_response(),
+                };
+                cols.iter()
+                    .map(|Column { column_name, .. }| format!("'{column_name}'"))
+                    .join(",")
             };
 
             let select = if !select.is_empty() {
-                &select
-                    .iter()
-                    .map(|s| format!("{s}::text"))
-                    .collect::<Vec<_>>()
-                    .join(",")
+                &select.iter().map(|s| format!("{s}::text")).join(",")
             } else {
                 &table
             };
@@ -139,6 +117,84 @@ pub(crate) async fn get_table(
             .map(Html)
             .map_err(internal_error)
             .into_response()
+        }
+        _ => StatusCode::NOT_ACCEPTABLE.into_response(),
+    }
+}
+
+pub(crate) async fn set_table(
+    Path(table): Path<String>,
+    Select(select): Select,
+    // TODO: use accept for return type
+    TypedHeader(_accept): TypedHeader<headers_accept::Accept>,
+    headers: HeaderMap,
+    State(AppState { pool }): State<AppState>,
+    Extension(tables): Extension<HashMap<String, Vec<Column>>>,
+    body: Bytes,
+) -> Response {
+    // TODO: do not map db genarated columns
+    // TODO: coalesce primary key inserts
+    let cols = match tables.get(&table) {
+        Some(cols) => cols,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let json_cols = cols
+        .iter()
+        .map(
+            |Column {
+                 column_name,
+                 data_type,
+             }| format!("{column_name} {data_type}"),
+        )
+        .join(",");
+    let ins_cols = cols
+        .iter()
+        .filter(|Column { column_name, .. }| {
+            column_name != "id" && column_name != "added" && column_name != "updated"
+        })
+        .map(|Column { column_name, .. }| column_name)
+        .join(",");
+    let ins_col_vals = cols
+        .iter()
+        .filter(|Column { column_name, .. }| {
+            column_name != "id" && column_name != "added" && column_name != "updated"
+        })
+        .map(|Column { column_name, .. }| format!("i.{column_name}"))
+        .join(",");
+    let upd_cols = cols
+        .iter()
+        .filter(|Column { column_name, .. }| {
+            column_name != "id" && column_name != "added" && column_name != "updated"
+        })
+        .map(|Column { column_name, .. }| format!("{column_name} = i.{column_name}"))
+        .join(",");
+    let select = if !select.is_empty() {
+        &format!(
+            "jsonb_build_object({})",
+            select.iter().map(|s| format!("'{s}', e.{s}")).join(",")
+        )
+    } else {
+        "to_json(e.*)"
+    };
+    match headers.get(CONTENT_TYPE).and_then(|h| h.to_str().ok()) {
+        Some(header) if header.starts_with("application/json") => {
+            // TODO: validate input
+            let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+            let sql = Box::leak(Box::new(format!(
+                r#"
+                    merge into {table} e
+                    using (select * from json_table($1, '$' columns (_drop bool,{json_cols}))) i
+                    on e.id = i.id
+                    when not matched then insert ({ins_cols}) values ({ins_col_vals})
+                    when matched and i._drop = false then update set {upd_cols}
+                    when matched then delete
+                    returning {select};
+                "#,
+            )));
+            let stream = sqlx::query_scalar::<_, serde_json::Value>(sql)
+                .bind(payload)
+                .fetch(pool);
+            JsonLines::new(stream).into_response()
         }
         _ => StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response(),
     }
@@ -184,7 +240,14 @@ pub(crate) async fn mdw(
 mod tests {
     use std::error::Error;
 
-    use axum::{body::Body, extract::Request, http::StatusCode};
+    use axum::{
+        body::Body,
+        extract::Request,
+        http::{
+            header::{ACCEPT, CONTENT_TYPE},
+            StatusCode,
+        },
+    };
     use http_body_util::BodyExt;
     use sqlx::{Executor, PgPool};
     use tower::ServiceExt;
@@ -204,7 +267,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username,email")
-                    .header("Accept", "text/html")
+                    .header(ACCEPT, "text/html")
                     .body(Body::empty())?,
             )
             .await?;
@@ -230,7 +293,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username,email")
-                    .header("Accept", "text/html")
+                    .header(ACCEPT, "text/html")
                     .body(Body::empty())?,
             )
             .await?;
@@ -254,7 +317,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username")
-                    .header("Accept", "application/json")
+                    .header(ACCEPT, "application/json")
                     .body(Body::empty())?,
             )
             .await?;
@@ -280,7 +343,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username")
-                    .header("Accept", "application/json")
+                    .header(ACCEPT, "application/json")
                     .body(Body::empty())?,
             )
             .await?;
@@ -305,7 +368,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username,email")
-                    .header("Accept", "text/csv")
+                    .header(ACCEPT, "text/csv")
                     .body(Body::empty())?,
             )
             .await?;
@@ -332,7 +395,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=username,email")
-                    .header("Accept", "text/csv")
+                    .header(ACCEPT, "text/csv")
                     .body(Body::empty())?,
             )
             .await?;
@@ -359,7 +422,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users?select=bad_column")
-                    .header("Accept", "text/html")
+                    .header(ACCEPT, "text/html")
                     .body(Body::empty())?,
             )
             .await?;
@@ -383,12 +446,42 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/users")
-                    .header("Accept", "text/html")
+                    .header(ACCEPT, "text/html")
                     .body(Body::empty())?,
             )
             .await?;
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn users_post_json(pool: PgPool) -> Result<(), Box<dyn Error>> {
+        pool.execute("create extension tankard;").await?;
+        pool.execute(include_str!("../../db/sql/users.sql")).await?;
+        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+
+        let app = app(Box::leak(Box::new(pool))).await?;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/users?select=username")
+                    .header(ACCEPT, "application/json")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"[{"username":"one","salt":"","passhash":""}]"#,
+                    ))?,
+            )
+            .await?;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            "{\"username\":\"one\"}\n",
+            response.into_body().collect().await?.to_bytes()
+        );
 
         Ok(())
     }
