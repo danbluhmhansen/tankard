@@ -141,6 +141,7 @@
           deno # formatters
           nil # nix language server
           rust-analyzer # rust language server
+          rainfrog # psql tui
           usql # sql cli
         ];
       };

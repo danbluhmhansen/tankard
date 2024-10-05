@@ -5,12 +5,12 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-axum = "0.7.6"
+axum = "0.7.7"
 axum-extra = { version = "0.9.4", features = ["json-lines", "typed-header"] }
 axum-htmx = "0.6.0"
 bb8 = "0.8.5"
 bb8-postgres = "0.8.1"
-futures = "0.3.30"
+futures = "0.3.31"
 headers-accept = "0.1.4"
 itertools = "0.13.0"
 mediatype = "0.19.18"
