@@ -10,9 +10,11 @@ use axum::{
     Extension, Form, Json, RequestExt, Router,
 };
 use axum_extra::{extract::JsonLines, TypedHeader};
+use futures::StreamExt;
 use itertools::Itertools;
 use mediatype::{media_type, MediaType};
 use serde::{Deserialize, Serialize};
+use tokio_postgres::types::Type;
 
 use crate::{internal_error, AppState};
 
@@ -129,7 +131,7 @@ pub(crate) async fn get_table(
     }: Table,
     Select(select): Select,
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
-    State(AppState { pool }): State<AppState>,
+    State(AppState { pool, .. }): State<AppState>,
 ) -> Response {
     match accept.negotiate(AVAILABLE) {
         Some(mt) if mt == &MT_APPLICATION_JSON => {
@@ -139,33 +141,35 @@ pub(crate) async fn get_table(
                     select.iter().map(|s| format!("'{s}', {s}")).join(",")
                 )
             } else {
-                &table
+                &format!("to_json({table})")
             };
-            let sql = Box::leak(Box::new(format!("select {select} from {table};")));
-            let stream = sqlx::query_scalar::<_, serde_json::Value>(sql).fetch(pool);
-            JsonLines::new(stream).into_response()
+            let conn = pool.get().await.unwrap();
+            conn.copy_out(&(format!("copy (select {select} from {table}) to stdout;")))
+                .await
+                .map(|stream| {
+                    JsonLines::new(stream.map(|res| {
+                        res.map(|b| serde_json::from_slice::<serde_json::Value>(&b))
+                            .unwrap()
+                    }))
+                })
+                .map_err(internal_error)
+                .into_response()
         }
         Some(mt) if mt == &MT_TEXT_CSV => {
-            let conn = match pool.acquire().await {
-                Ok(conn) => conn,
-                Err(err) => return internal_error(err).into_response(),
-            };
-
             let select = if !select.is_empty() {
                 &select.join(",")
             } else {
                 "*"
             };
 
-            match Box::leak(Box::new(conn))
-                .copy_out_raw(&format!(
-                    "copy (select {select} from {table}) to stdout with csv header;"
-                ))
-                .await
-            {
-                Ok(stream) => Body::from_stream(stream).into_response(),
-                Err(err) => internal_error(err).into_response(),
-            }
+            let conn = pool.get().await.unwrap();
+            conn.copy_out(
+                &(format!("copy (select {select} from {table}) to stdout with csv header;")),
+            )
+            .await
+            .map(Body::from_stream)
+            .map_err(internal_error)
+            .into_response()
         }
         Some(mt) if mt == &MT_TEXT_HTML => {
             let head = if !select.is_empty() {
@@ -184,13 +188,12 @@ pub(crate) async fn get_table(
             };
 
             // TODO: support other keys than `id`
-            sqlx::query_scalar::<_, String>(&format!(
+            let conn = pool.get().await.unwrap();
+            conn.query_one(&(format!(
                 "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from {table})))));"
-            ))
-            .bind(include_str!("../../tmpl/table.html"))
-            .fetch_one(pool)
+            )), &[&include_str!("../../tmpl/table.html")])
             .await
-            .map(Html)
+            .map(|row| Html(row.get::<_, String>(0)))
             .map_err(internal_error)
             .into_response()
         }
@@ -205,7 +208,7 @@ pub(crate) async fn set_table(
     }: Table,
     Select(select): Select,
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
-    State(AppState { pool }): State<AppState>,
+    State(AppState { pool, .. }): State<AppState>,
     JsonOrForm(payload): JsonOrForm<serde_json::Value>,
 ) -> Response {
     // TODO: do not map db genarated columns
@@ -251,7 +254,8 @@ pub(crate) async fn set_table(
     match accept.negotiate(AVAILABLE) {
         Some(mt) if mt == &MT_APPLICATION_JSON => {
             // TODO: validate input
-            let sql = Box::leak(Box::new(format!(
+            let conn = pool.get().await.unwrap();
+            let statement = format!(
                 r#"
                     merge into {table} e
                     using (select * from json_table($1, '$' columns (_drop bool,{json_cols}))) i
@@ -261,11 +265,16 @@ pub(crate) async fn set_table(
                     when matched then delete
                     returning {select};
                 "#,
-            )));
-            let stream = sqlx::query_scalar::<_, serde_json::Value>(sql)
-                .bind(payload)
-                .fetch(pool);
-            JsonLines::new(stream).into_response()
+            );
+            conn.query_typed_raw(&statement, [(payload, Type::JSONB)])
+                .await
+                .map(|stream| {
+                    JsonLines::new(
+                        stream.map(|res| res.map(|row| row.get::<_, serde_json::Value>(0))),
+                    )
+                })
+                .map_err(internal_error)
+                .into_response()
         }
         _ => StatusCode::NOT_ACCEPTABLE.into_response(),
     }
@@ -283,20 +292,40 @@ mod tests {
             StatusCode,
         },
     };
+    use bb8_postgres::PostgresConnectionManager;
     use http_body_util::BodyExt;
-    use sqlx::{Executor, PgPool};
+    use tokio_postgres::NoTls;
     use tower::ServiceExt;
 
     use crate::app;
 
-    #[sqlx::test]
-    async fn users_html(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
-        pool.execute("insert into users (id, username, salt, passhash, email) values ('00000000-0000-0000-0000-000000000000', 'one', '', '', 'foo'), ('00000000-0000-0000-0000-000000000001', 'two', '', '', 'foo'), ('00000000-0000-0000-0000-000000000002', 'three', '', '', 'foo');").await?;
+    #[tokio::test]
+    async fn users_html() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_html;", &[])
+            .await?;
+        conn.execute("create database test_users_html;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_html",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+            "insert into users (id, username, salt, passhash, email) values ('00000000-0000-0000-0000-000000000000', 'one', '', '', 'foo'), ('00000000-0000-0000-0000-000000000001', 'two', '', '', 'foo'), ('00000000-0000-0000-0000-000000000002', 'three', '', '', 'foo');",
+        )).await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -316,13 +345,33 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn users_html_empty(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+    #[tokio::test]
+    async fn users_html_empty() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_html_empty;", &[])
+            .await?;
+        conn.execute("create database test_users_html_empty;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_html_empty",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+        ))
+        .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -339,14 +388,34 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn users_json(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
-        pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');").await?;
+    #[tokio::test]
+    async fn users_json() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_json;", &[])
+            .await?;
+        conn.execute("create database test_users_json;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_json",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+            "insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');",
+        ))
+        .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -366,13 +435,33 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn users_json_empty(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+    #[tokio::test]
+    async fn users_json_empty() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_json_empty;", &[])
+            .await?;
+        conn.execute("create database test_users_json_empty;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_json_empty",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+        ))
+        .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -389,15 +478,33 @@ mod tests {
         Ok(())
     }
 
-    // FIXME: test performance on success
-    #[sqlx::test]
-    async fn users_csv(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
-        pool.execute("insert into users (username, salt, passhash, email) values ('one', '', '', 'foo'), ('two', '', '', 'foo'), ('three', '', '', 'foo');").await?;
+    #[tokio::test]
+    async fn users_csv() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_csv;", &[])
+            .await?;
+        conn.execute("create database test_users_csv;", &[]).await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_csv",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+            "insert into users (username, salt, passhash, email) values ('one', '', '', 'foo'), ('two', '', '', 'foo'), ('three', '', '', 'foo');",
+        ))
+        .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -417,14 +524,33 @@ mod tests {
         Ok(())
     }
 
-    // FIXME: test performance on success
-    #[sqlx::test]
-    async fn users_csv_empty(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+    #[tokio::test]
+    async fn users_csv_empty() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_csv_empty;", &[])
+            .await?;
+        conn.execute("create database test_users_csv_empty;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_csv_empty",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+        ))
+        .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -444,14 +570,34 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn users_bad_select(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
-        pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');").await?;
+    #[tokio::test]
+    async fn users_bad_select() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_bad_select;", &[])
+            .await?;
+        conn.execute("create database test_users_bad_select;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_bad_select",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+            "insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');",
+        ))
+        .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -471,11 +617,29 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn table_not_found(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
+    #[tokio::test]
+    async fn table_not_found() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_table_not_found;", &[])
+            .await?;
+        conn.execute("create database test_table_not_found;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_table_not_found",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!("create extension tankard;",))
+            .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
@@ -491,13 +655,33 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn users_post_json(pool: PgPool) -> Result<(), Box<dyn Error>> {
-        pool.execute("create extension tankard;").await?;
-        pool.execute(include_str!("../../db/sql/users.sql")).await?;
-        pool.execute(include_str!("../../db/sql/html.sql")).await?;
+    #[tokio::test]
+    async fn users_post_json() -> Result<(), Box<dyn Error>> {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute("drop database if exists test_users_post_json;", &[])
+            .await?;
+        conn.execute("create database test_users_post_json;", &[])
+            .await?;
 
-        let app = app(Box::leak(Box::new(pool))).await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/test_users_post_json",
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+        ))
+        .await?;
+
+        let app = app(pool).await?;
 
         let response = app
             .oneshot(
