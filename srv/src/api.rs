@@ -2,13 +2,12 @@ use std::{collections::HashMap, str::FromStr};
 
 use axum::{
     async_trait,
-    body::{Body, Bytes},
-    extract::{FromRequestParts, Path, Request, State},
-    http::{header::CONTENT_TYPE, request::Parts, HeaderMap, StatusCode},
-    middleware::{self, Next},
+    body::Body,
+    extract::{FromRequest, FromRequestParts, Path, Request, State},
+    http::{header::CONTENT_TYPE, request::Parts, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::get,
-    Extension, Router,
+    Extension, Form, Json, RequestExt, Router,
 };
 use axum_extra::{extract::JsonLines, TypedHeader};
 use itertools::Itertools;
@@ -17,26 +16,104 @@ use serde::{Deserialize, Serialize};
 
 use crate::{internal_error, AppState};
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/", get(get_table).post(set_table))
-        .layer(middleware::from_fn(mdw))
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct Column {
+    column_name: String,
+    data_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct Table {
+    name: String,
+    columns: Vec<Column>,
+}
+
+#[async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for Table {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Path(name) = Path::<String>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND.into_response())?;
+        let Extension(tables) =
+            Extension::<HashMap<String, Vec<Column>>>::from_request_parts(parts, state)
+                .await
+                // TODO: add error description
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+        tables
+            .get(&name)
+            // TODO: avoid clone?
+            .cloned()
+            .map(|columns| Self { name, columns })
+            .ok_or(StatusCode::NOT_FOUND.into_response())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Select(pub(crate) Vec<String>);
 
 #[async_trait]
-impl<S> FromRequestParts<S> for Select {
-    type Rejection = String;
+impl<S: Send + Sync> FromRequestParts<S> for Select {
+    type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        match parts.uri.query().map(Select::from_str) {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let select = match parts.uri.query().map(Select::from_str) {
             Some(Ok(select)) => Ok(select),
-            Some(Err(err)) => Err(err.to_string()),
+            Some(Err(err)) => Err((StatusCode::INTERNAL_SERVER_ERROR, err).into_response()),
             None => Ok(Self(vec![])),
+        }?;
+        let table = Table::from_request_parts(parts, state).await?;
+
+        let bad_selects: Vec<_> = select
+            .0
+            .iter()
+            .filter(|&s| !table.columns.iter().any(|c| &c.column_name == s))
+            .map(|s| s.as_str())
+            .collect();
+
+        if bad_selects.is_empty() {
+            Ok(select)
+        } else {
+            // TODO: better error response
+            Err((StatusCode::BAD_REQUEST, bad_selects.join(",")).into_response())
         }
     }
+}
+
+pub(crate) struct JsonOrForm<T>(T);
+
+#[async_trait]
+impl<S: Send + Sync, T: 'static> FromRequest<S> for JsonOrForm<T>
+where
+    Json<T>: FromRequest<()>,
+    Form<T>: FromRequest<()>,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let content_type_header = req.headers().get(CONTENT_TYPE);
+        let content_type = content_type_header.and_then(|value| value.to_str().ok());
+
+        match content_type {
+            Some(content_type) if content_type.starts_with("application/json") => req
+                .extract()
+                .await
+                .map(|Json(payload)| Self(payload))
+                .map_err(IntoResponse::into_response),
+            Some(content_type) if content_type.starts_with("application/x-www-form-urlencoded") => {
+                req.extract()
+                    .await
+                    .map(|Form(payload)| Self(payload))
+                    .map_err(IntoResponse::into_response)
+            }
+            _ => Err(StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response()),
+        }
+    }
+}
+
+pub(crate) fn router() -> Router<AppState> {
+    Router::new().route("/", get(get_table).post(set_table))
 }
 
 const MT_TEXT_HTML: MediaType = media_type!(TEXT / HTML);
@@ -46,11 +123,13 @@ const MT_TEXT_CSV: MediaType = media_type!(TEXT / CSV);
 const AVAILABLE: &[MediaType] = &[MT_TEXT_HTML, MT_APPLICATION_JSON, MT_TEXT_CSV];
 
 pub(crate) async fn get_table(
-    Path(table): Path<String>,
+    Table {
+        name: table,
+        columns,
+    }: Table,
     Select(select): Select,
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
     State(AppState { pool }): State<AppState>,
-    Extension(tables): Extension<HashMap<String, Vec<Column>>>,
 ) -> Response {
     match accept.negotiate(AVAILABLE) {
         Some(mt) if mt == &MT_APPLICATION_JSON => {
@@ -92,11 +171,8 @@ pub(crate) async fn get_table(
             let head = if !select.is_empty() {
                 select.iter().map(|s| format!("'{s}'")).join(",")
             } else {
-                let cols = match tables.get(&table) {
-                    Some(cols) => cols,
-                    None => return StatusCode::NOT_FOUND.into_response(),
-                };
-                cols.iter()
+                columns
+                    .iter()
                     .map(|Column { column_name, .. }| format!("'{column_name}'"))
                     .join(",")
             };
@@ -123,22 +199,18 @@ pub(crate) async fn get_table(
 }
 
 pub(crate) async fn set_table(
-    Path(table): Path<String>,
+    Table {
+        name: table,
+        columns,
+    }: Table,
     Select(select): Select,
-    // TODO: use accept for return type
-    TypedHeader(_accept): TypedHeader<headers_accept::Accept>,
-    headers: HeaderMap,
+    TypedHeader(accept): TypedHeader<headers_accept::Accept>,
     State(AppState { pool }): State<AppState>,
-    Extension(tables): Extension<HashMap<String, Vec<Column>>>,
-    body: Bytes,
+    JsonOrForm(payload): JsonOrForm<serde_json::Value>,
 ) -> Response {
     // TODO: do not map db genarated columns
     // TODO: coalesce primary key inserts
-    let cols = match tables.get(&table) {
-        Some(cols) => cols,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let json_cols = cols
+    let json_cols = columns
         .iter()
         .map(
             |Column {
@@ -147,21 +219,21 @@ pub(crate) async fn set_table(
              }| format!("{column_name} {data_type}"),
         )
         .join(",");
-    let ins_cols = cols
+    let ins_cols = columns
         .iter()
         .filter(|Column { column_name, .. }| {
             column_name != "id" && column_name != "added" && column_name != "updated"
         })
         .map(|Column { column_name, .. }| column_name)
         .join(",");
-    let ins_col_vals = cols
+    let ins_col_vals = columns
         .iter()
         .filter(|Column { column_name, .. }| {
             column_name != "id" && column_name != "added" && column_name != "updated"
         })
         .map(|Column { column_name, .. }| format!("i.{column_name}"))
         .join(",");
-    let upd_cols = cols
+    let upd_cols = columns
         .iter()
         .filter(|Column { column_name, .. }| {
             column_name != "id" && column_name != "added" && column_name != "updated"
@@ -176,10 +248,9 @@ pub(crate) async fn set_table(
     } else {
         "to_json(e.*)"
     };
-    match headers.get(CONTENT_TYPE).and_then(|h| h.to_str().ok()) {
-        Some(header) if header.starts_with("application/json") => {
+    match accept.negotiate(AVAILABLE) {
+        Some(mt) if mt == &MT_APPLICATION_JSON => {
             // TODO: validate input
-            let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
             let sql = Box::leak(Box::new(format!(
                 r#"
                     merge into {table} e
@@ -196,44 +267,8 @@ pub(crate) async fn set_table(
                 .fetch(pool);
             JsonLines::new(stream).into_response()
         }
-        _ => StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response(),
+        _ => StatusCode::NOT_ACCEPTABLE.into_response(),
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub(crate) struct Column {
-    pub(crate) column_name: String,
-    pub(crate) data_type: String,
-}
-
-pub(crate) async fn mdw(
-    Path(table): Path<String>,
-    Select(select): Select,
-    request: Request,
-    next: Next,
-) -> Response {
-    let tables = match request.extensions().get::<HashMap<String, Vec<Column>>>() {
-        Some(tables) => tables,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
-
-    let table = match tables.get(&table) {
-        Some(table) => table,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
-
-    let bad_selects: Vec<_> = select
-        .iter()
-        .filter(|&s| !table.iter().any(|c| &c.column_name == s))
-        .map(|s| s.as_str())
-        .collect();
-
-    if !bad_selects.is_empty() {
-        // TODO: better error response
-        return (StatusCode::BAD_REQUEST, bad_selects.join(",")).into_response();
-    }
-
-    next.run(request).await
 }
 
 #[cfg(test)]
