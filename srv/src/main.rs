@@ -8,7 +8,7 @@ use axum::{
     Extension, Router,
 };
 use bb8_postgres::PostgresConnectionManager;
-use futures::{channel::mpsc, Stream, StreamExt};
+use futures::{channel::mpsc, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use tokio::net::TcpListener;
 use tokio_postgres::{AsyncMessage, NoTls};
 use tower_http::services::ServeDir;
@@ -26,33 +26,47 @@ where
 async fn index(
     State(AppState { pool, .. }): State<AppState>,
 ) -> Result<Html<String>, (StatusCode, String)> {
-    let conn = pool.get().await.unwrap();
+    let conn = match pool.get().await.map_err(internal_error) {
+        Ok(conn) => conn,
+        Err(err) => return Err(err),
+    };
     conn.query_one("select html_minify(html_index());", &[])
         .await
         .map(|row| Html(row.get(0)))
         .map_err(internal_error)
 }
 
-// FIXME: no notifications are received
 async fn listen(
     Path(event): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, String>>>, (StatusCode, String)> {
-    println!("trying to listen to event: {event}");
     let db_url = std::option_env!("DATABASE_URL").unwrap_or("postgres://localhost:28816/tankard");
-    let (client, _) = tokio_postgres::connect(db_url, NoTls).await.unwrap();
-
-    let (_, rx) = mpsc::unbounded();
-    client
-        .execute(&format!("listen {event};"), &[])
+    let (client, mut conn) = match tokio_postgres::connect(db_url, NoTls)
+        .map_err(internal_error)
         .await
-        .unwrap();
+    {
+        Ok(conn) => conn,
+        Err(err) => return Err(err),
+    };
 
-    // drop(client);
+    let (tx, rx) = mpsc::unbounded();
 
-    let notifications = rx.map(move |m| match m {
+    let stream =
+        futures::stream::poll_fn(move |cx| conn.poll_message(cx)).map_err(|e| panic!("{}", e));
+    let connection = stream.forward(tx).map(|r| r.unwrap());
+    tokio::spawn(connection);
+
+    // FIXME: remove endless loop and properly keep client alive
+    tokio::spawn(async move {
+        _ = client
+            .batch_execute(&format!("listen {event};notify {event};"))
+            .await;
+        loop {}
+    });
+
+    let notifications = rx.map(|m| match m {
         AsyncMessage::Notification(n) => {
             println!("notification: {n:?}");
-            Ok(Event::default().event(&event).data(n.payload()))
+            Ok(Event::default().event(n.channel()).data(n.payload()))
         }
         AsyncMessage::Notice(n) => {
             println!("notice: {n}");
@@ -117,59 +131,82 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 // TODO: fix sse and re-enable tests for it
-// #[cfg(test)]
-// mod tests {
-//     use std::error::Error;
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
 
-//     use axum::{
-//         body::Body,
-//         http::{Request, StatusCode},
-//     };
-//     use bb8_postgres::PostgresConnectionManager;
-//     use futures::StreamExt;
-//     use http_body_util::BodyExt;
-//     use sqlx::{Executor, PgPool};
-//     use tokio_postgres::NoTls;
-//     use tower::ServiceExt;
+    use axum::Router;
+    use bb8::PooledConnection;
+    use bb8_postgres::PostgresConnectionManager;
+    use tokio_postgres::NoTls;
 
-//     use crate::app;
+    use crate::app;
 
-//     #[sqlx::test]
-//     async fn users_listen(pool: PgPool) -> Result<(), Box<dyn Error>> {
-//         let conn_options = pool.connect_options();
-//         let db_name = conn_options.get_database().unwrap_or("");
-//         let manager = PostgresConnectionManager::new_from_stringlike(
-//             format!("postgres://localhost:28817/{db_name}"),
-//             NoTls,
-//         )?;
-//         let pool2 = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-//         let pool = Box::leak(Box::new(pool));
-//         pool.execute("create extension tankard;").await?;
-//         pool.execute(include_str!("../../db/sql/users.sql")).await?;
-//         pool.execute(include_str!("../../db/sql/html.sql")).await?;
-//         pool.execute("insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');")
-//             .await?;
+    pub(crate) async fn setup_app(
+        db_name: &'static str,
+    ) -> Result<
+        (
+            PooledConnection<'static, PostgresConnectionManager<NoTls>>,
+            Router,
+        ),
+        Box<dyn Error>,
+    > {
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            "postgres://localhost:28817/postgres",
+            NoTls,
+        )?;
+        let pool = bb8::Pool::builder().build(manager).await?;
+        let conn = pool.get().await?;
+        conn.execute(&format!(r#"drop database if exists "{db_name}";"#), &[])
+            .await?;
+        conn.execute(&format!(r#"create database "{db_name}";"#), &[])
+            .await?;
 
-//         let response = app(pool, pool2)
-//             .await?
-//             .oneshot(
-//                 Request::builder()
-//                     .uri("/listen/users_event")
-//                     .header("Accept", "*/*")
-//                     .body(Body::empty())?,
-//             )
-//             .await?;
+        let manager = PostgresConnectionManager::new_from_stringlike(
+            &format!("postgres://localhost:28817/{db_name}"),
+            NoTls,
+        )?;
+        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
+        let conn = pool.get().await?;
+        conn.batch_execute(concat!(
+            "create extension tankard;",
+            include_str!("../../db/sql/users.sql"),
+            include_str!("../../db/sql/html.sql"),
+        ))
+        .await?;
 
-//         assert_eq!(response.status(), StatusCode::OK);
+        let app = app(pool).await?;
 
-//         pool.execute("insert into users (username, salt, passhash) values ('four', '', '');")
-//             .await?;
+        Ok((conn, app))
+    }
 
-//         assert_eq!(
-//             response.into_data_stream().next().await.unwrap()?,
-//             "event: users_event\ndata: \n\n"
-//         );
+    // FIXME: test never completes
+    // #[tokio::test]
+    // async fn users_listen() -> Result<(), Box<dyn Error>> {
+    //     let (conn, app) = setup_app("7c1571da-1028-4dc3-b18e-e84842003f10").await?;
+    //     conn.batch_execute(
+    //         "insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');",
+    //     ).await?;
 
-//         Ok(())
-//     }
-// }
+    //     let response = app
+    //         .oneshot(
+    //             Request::builder()
+    //                 .uri("/listen/users_event")
+    //                 .header("Accept", "*/*")
+    //                 .body(Body::empty())?,
+    //         )
+    //         .await?;
+
+    //     assert_eq!(response.status(), StatusCode::OK);
+
+    //     conn.batch_execute("insert into users (username, salt, passhash) values ('four', '', '');")
+    //         .await?;
+
+    //     assert_eq!(
+    //         response.into_data_stream().next().await.unwrap()?,
+    //         "event: users_event\ndata: \n\n"
+    //     );
+
+    //     Ok(())
+    // }
+}

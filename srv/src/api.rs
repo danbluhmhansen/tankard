@@ -10,7 +10,7 @@ use axum::{
     Extension, Form, Json, RequestExt, Router,
 };
 use axum_extra::{extract::JsonLines, TypedHeader};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use itertools::Itertools;
 use mediatype::{media_type, MediaType};
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Table {
             Extension::<HashMap<String, Vec<Column>>>::from_request_parts(parts, state)
                 .await
                 // TODO: add error description
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+                .map_err(|e| internal_error(e).into_response())?;
         tables
             .get(&name)
             // TODO: avoid clone?
@@ -133,6 +133,10 @@ pub(crate) async fn get_table(
     TypedHeader(accept): TypedHeader<headers_accept::Accept>,
     State(AppState { pool, .. }): State<AppState>,
 ) -> Response {
+    let conn = match pool.get().await.map_err(internal_error) {
+        Ok(conn) => conn,
+        Err(err) => return err.into_response(),
+    };
     match accept.negotiate(AVAILABLE) {
         Some(mt) if mt == &MT_APPLICATION_JSON => {
             let select = if !select.is_empty() {
@@ -143,14 +147,14 @@ pub(crate) async fn get_table(
             } else {
                 &format!("to_json({table})")
             };
-            let conn = pool.get().await.unwrap();
             conn.copy_out(&(format!("copy (select {select} from {table}) to stdout;")))
                 .await
                 .map(|stream| {
-                    JsonLines::new(stream.map(|res| {
-                        res.map(|b| serde_json::from_slice::<serde_json::Value>(&b))
-                            .unwrap()
-                    }))
+                    JsonLines::new(
+                        stream
+                            .map_ok(|b| serde_json::from_slice::<serde_json::Value>(&b))
+                            .filter_map(|res| async { res.ok() }),
+                    )
                 })
                 .map_err(internal_error)
                 .into_response()
@@ -162,7 +166,6 @@ pub(crate) async fn get_table(
                 "*"
             };
 
-            let conn = pool.get().await.unwrap();
             conn.copy_out(
                 &(format!("copy (select {select} from {table}) to stdout with csv header;")),
             )
@@ -188,7 +191,6 @@ pub(crate) async fn get_table(
             };
 
             // TODO: support other keys than `id`
-            let conn = pool.get().await.unwrap();
             conn.query_one(&(format!(
                 "select html_minify(jinja_render($1, (select jsonb_build_object('head', array[{head}], 'body', (select array_agg(jsonb_build_object('key', id, 'cols', array[{select}])) from {table})))));"
             )), &[&include_str!("../../tmpl/table.html")])
@@ -211,6 +213,10 @@ pub(crate) async fn set_table(
     State(AppState { pool, .. }): State<AppState>,
     JsonOrForm(payload): JsonOrForm<serde_json::Value>,
 ) -> Response {
+    let conn = match pool.get().await.map_err(internal_error) {
+        Ok(conn) => conn,
+        Err(err) => return err.into_response(),
+    };
     // TODO: do not map db genarated columns
     // TODO: coalesce primary key inserts
     let json_cols = columns
@@ -254,7 +260,6 @@ pub(crate) async fn set_table(
     match accept.negotiate(AVAILABLE) {
         Some(mt) if mt == &MT_APPLICATION_JSON => {
             // TODO: validate input
-            let conn = pool.get().await.unwrap();
             let statement = format!(
                 r#"
                     merge into {table} e
@@ -292,40 +297,17 @@ mod tests {
             StatusCode,
         },
     };
-    use bb8_postgres::PostgresConnectionManager;
     use http_body_util::BodyExt;
-    use tokio_postgres::NoTls;
     use tower::ServiceExt;
 
-    use crate::app;
+    use crate::tests::setup_app;
 
     #[tokio::test]
     async fn users_html() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_html;", &[])
-            .await?;
-        conn.execute("create database test_users_html;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_html",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
+        let (conn, app) = setup_app("1dc4392f-7e60-4a64-8a3d-1788b2ac9820").await?;
+        conn.batch_execute(
             "insert into users (id, username, salt, passhash, email) values ('00000000-0000-0000-0000-000000000000', 'one', '', '', 'foo'), ('00000000-0000-0000-0000-000000000001', 'two', '', '', 'foo'), ('00000000-0000-0000-0000-000000000002', 'three', '', '', 'foo');",
-        )).await?;
-
-        let app = app(pool).await?;
+        ).await?;
 
         let response = app
             .oneshot(
@@ -347,31 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn users_html_empty() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_html_empty;", &[])
-            .await?;
-        conn.execute("create database test_users_html_empty;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_html_empty",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
-        ))
-        .await?;
-
-        let app = app(pool).await?;
+        let (_, app) = setup_app("b3a21a9d-2b18-466e-8e4d-c57d2f52c232").await?;
 
         let response = app
             .oneshot(
@@ -390,32 +348,10 @@ mod tests {
 
     #[tokio::test]
     async fn users_json() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_json;", &[])
-            .await?;
-        conn.execute("create database test_users_json;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_json",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
+        let (conn, app) = setup_app("573f05dc-baeb-4069-9f38-93f6279be1a8").await?;
+        conn.batch_execute(
             "insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');",
-        ))
-        .await?;
-
-        let app = app(pool).await?;
+        ).await?;
 
         let response = app
             .oneshot(
@@ -437,31 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn users_json_empty() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_json_empty;", &[])
-            .await?;
-        conn.execute("create database test_users_json_empty;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_json_empty",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
-        ))
-        .await?;
-
-        let app = app(pool).await?;
+        let (_, app) = setup_app("de4266a6-125a-4998-8f3a-f661c8c925ad").await?;
 
         let response = app
             .oneshot(
@@ -480,31 +392,10 @@ mod tests {
 
     #[tokio::test]
     async fn users_csv() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_csv;", &[])
-            .await?;
-        conn.execute("create database test_users_csv;", &[]).await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_csv",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
+        let (conn, app) = setup_app("f52d7679-f08d-4830-9cbb-11cf4dce6742").await?;
+        conn.batch_execute(
             "insert into users (username, salt, passhash, email) values ('one', '', '', 'foo'), ('two', '', '', 'foo'), ('three', '', '', 'foo');",
-        ))
-        .await?;
-
-        let app = app(pool).await?;
+        ).await?;
 
         let response = app
             .oneshot(
@@ -526,31 +417,7 @@ mod tests {
 
     #[tokio::test]
     async fn users_csv_empty() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_csv_empty;", &[])
-            .await?;
-        conn.execute("create database test_users_csv_empty;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_csv_empty",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
-        ))
-        .await?;
-
-        let app = app(pool).await?;
+        let (_, app) = setup_app("d822e1bb-d6b4-46f6-8a37-77ea3bab1ecb").await?;
 
         let response = app
             .oneshot(
@@ -572,32 +439,10 @@ mod tests {
 
     #[tokio::test]
     async fn users_bad_select() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_bad_select;", &[])
-            .await?;
-        conn.execute("create database test_users_bad_select;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_bad_select",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
+        let (conn, app) = setup_app("497f06e4-c65d-4e67-8a3c-006f772819f7").await?;
+        conn.batch_execute(
             "insert into users (username, salt, passhash) values ('one', '', ''), ('two', '', ''), ('three', '', '');",
-        ))
-        .await?;
-
-        let app = app(pool).await?;
+        ).await?;
 
         let response = app
             .oneshot(
@@ -619,32 +464,12 @@ mod tests {
 
     #[tokio::test]
     async fn table_not_found() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_table_not_found;", &[])
-            .await?;
-        conn.execute("create database test_table_not_found;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_table_not_found",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!("create extension tankard;",))
-            .await?;
-
-        let app = app(pool).await?;
+        let (_, app) = setup_app("c780c975-31b3-4bfa-9945-fc136757779a").await?;
 
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/users")
+                    .uri("/api/no_table")
                     .header(ACCEPT, "text/html")
                     .body(Body::empty())?,
             )
@@ -657,31 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn users_post_json() -> Result<(), Box<dyn Error>> {
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/postgres",
-            NoTls,
-        )?;
-        let pool = bb8::Pool::builder().build(manager).await?;
-        let conn = pool.get().await?;
-        conn.execute("drop database if exists test_users_post_json;", &[])
-            .await?;
-        conn.execute("create database test_users_post_json;", &[])
-            .await?;
-
-        let manager = PostgresConnectionManager::new_from_stringlike(
-            "postgres://localhost:28817/test_users_post_json",
-            NoTls,
-        )?;
-        let pool = Box::leak(Box::new(bb8::Pool::builder().build(manager).await?));
-        let conn = pool.get().await?;
-        conn.batch_execute(concat!(
-            "create extension tankard;",
-            include_str!("../../db/sql/users.sql"),
-            include_str!("../../db/sql/html.sql"),
-        ))
-        .await?;
-
-        let app = app(pool).await?;
+        let (_, app) = setup_app("d54eddd9-6a92-46fd-9c58-0c5a9b710312").await?;
 
         let response = app
             .oneshot(
