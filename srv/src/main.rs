@@ -55,7 +55,7 @@ async fn listen(
     let connection = stream.forward(tx).map(|r| r.unwrap());
     tokio::spawn(connection);
 
-    // FIXME: remove endless loop and properly keep client alive
+    // FIXME: remove endless loop and keep client alive properly
     tokio::spawn(async move {
         _ = client
             .batch_execute(&format!("listen {event};notify {event};"))
@@ -64,18 +64,9 @@ async fn listen(
     });
 
     let notifications = rx.map(|m| match m {
-        AsyncMessage::Notification(n) => {
-            println!("notification: {n:?}");
-            Ok(Event::default().event(n.channel()).data(n.payload()))
-        }
-        AsyncMessage::Notice(n) => {
-            println!("notice: {n}");
-            Ok(Event::default())
-        }
-        _ => {
-            println!("discard message");
-            Ok(Event::default())
-        }
+        AsyncMessage::Notification(n) => Ok(Event::default().event(n.channel()).data(n.payload())),
+        AsyncMessage::Notice(_) => Ok(Event::default()),
+        _ => Ok(Event::default()),
     });
 
     Ok(Sse::new(notifications))
